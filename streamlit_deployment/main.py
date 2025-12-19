@@ -619,8 +619,41 @@ def main():
         for label in labels:
             class_counts[label] = class_counts.get(label, 0) + 1
         
+        # Text summary
         for class_name, count in sorted(class_counts.items()):
             st.write(f"**{class_name}**: {count} detection(s)")
+        
+        # Visual class distribution chart
+        st.subheader("Class Distribution")
+        if len(class_counts) > 0:
+            # Create bar chart
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            
+            classes = list(class_counts.keys())
+            counts = list(class_counts.values())
+            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+            
+            # Bar chart
+            ax1.bar(classes, counts, color=colors[:len(classes)])
+            ax1.set_xlabel('Class')
+            ax1.set_ylabel('Number of Detections')
+            ax1.set_title('Detections per Class')
+            ax1.grid(axis='y', alpha=0.3)
+            plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+            
+            # Pie chart
+            if len(counts) > 1:
+                ax2.pie(counts, labels=classes, autopct='%1.1f%%', 
+                       colors=colors[:len(classes)], startangle=90)
+                ax2.set_title('Class Distribution (Percentage)')
+            else:
+                ax2.text(0.5, 0.5, f'{classes[0]}\n{counts[0]} detection(s)', 
+                        ha='center', va='center', fontsize=14, transform=ax2.transAxes)
+                ax2.set_title('Class Distribution')
+                ax2.axis('off')
+            
+            plt.tight_layout()
+            st.pyplot(fig)
 
     # Show raw detections table
     with st.expander("Show raw detections"):
