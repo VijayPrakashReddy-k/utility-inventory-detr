@@ -52,29 +52,25 @@ except ImportError:
 
 import torchvision.transforms as T
 
-# Add parent directory to path to import detr module
-# Get absolute path to training directory
-current_file = Path(__file__).resolve()
-training_dir = current_file.parent.parent / "training"
-training_path = str(training_dir)
-if training_path not in sys.path:
-    sys.path.insert(0, training_path)
-
 # Import DETR model - try multiple methods
 # CRITICAL: Don't exit on failure - handle gracefully in functions
+# First try: import from same directory (streamlit_deployment/detr_model.py)
+current_file = Path(__file__).resolve()
 DETRdemo = None
+
 try:
+    # First try: same directory (for Streamlit Cloud deployment)
     from detr_model import DETRdemo
 except ImportError:
-    # Try alternative: add workspace root to path
-    workspace_root = current_file.parent.parent.parent
-    alt_path = str(workspace_root / "utility-detr" / "training")
-    if alt_path not in sys.path:
-        sys.path.insert(0, alt_path)
+    # Fallback 1: try from training directory (for local development)
+    training_dir = current_file.parent.parent / "training"
+    training_path = str(training_dir)
+    if training_path not in sys.path:
+        sys.path.insert(0, training_path)
     try:
         from detr_model import DETRdemo
     except ImportError:
-        # Last resort: try direct import from training
+        # Fallback 2: try direct file import from training directory
         import importlib.util
         model_file = training_dir / "detr_model.py"
         if model_file.exists():
@@ -83,6 +79,15 @@ except ImportError:
                 detr_model = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(detr_model)
                 DETRdemo = detr_model.DETRdemo
+        else:
+            # Fallback 3: try from same directory using direct file import
+            local_model_file = current_file.parent / "detr_model.py"
+            if local_model_file.exists():
+                spec = importlib.util.spec_from_file_location("detr_model", local_model_file)
+                if spec and spec.loader:
+                    detr_model = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(detr_model)
+                    DETRdemo = detr_model.DETRdemo
 
 # Torch runtime knobs - only set if torch is available
 if torch is not None:
