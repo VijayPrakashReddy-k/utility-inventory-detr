@@ -153,8 +153,7 @@ def set_page_bg(png_path: str) -> None:
     except Exception:
         pass  # background is optional
 
-# CRITICAL: Don't check background at import time - move to function
-# Background image check removed from top-level to prevent file I/O on startup
+# Background image - will be set in main() function to avoid top-level file I/O
 
 # ---- transforms ----
 # Keep short/long side ~800 to limit memory usage
@@ -542,6 +541,11 @@ def main():
         st.error("❌ **DETR model class not found!**")
         st.info("Could not import DETRdemo. Please check that `training/detr_model.py` exists.")
         return
+    
+    # Set background image if available (lazy load - not at import time)
+    bg_path = Path(__file__).parent / "background.png"
+    if bg_path.exists():
+        set_page_bg(str(bg_path))
     
     st.title("Utility Inventory Detection (DETR)")
     st.caption("Custom trained DETR model for detecting insulators, crossarms, and utility poles.")
