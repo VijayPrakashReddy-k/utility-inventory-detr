@@ -1,0 +1,8 @@
+# System packages for Streamlit Cloud deployment
+# This file is optional - Streamlit Cloud usually handles dependencies automatically
+# Only add if you need specific system-level packages
+
+# Example (uncomment if needed):
+# libgl1-mesa-glx
+# libglib2.0-0
+
