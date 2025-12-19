@@ -11,19 +11,12 @@ import sys
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 # Check if we're in the right environment - show helpful error if not
+# CRITICAL: Don't exit - show error in Streamlit instead
 try:
     import torch
 except ImportError:
-    print("=" * 70)
-    print("ERROR: PyTorch not found!")
-    print("=" * 70)
-    print("You must run this app from the conda environment where PyTorch is installed.")
-    print("\nSolution:")
-    print("  1. Activate conda environment: conda activate ai-trends")
-    print("  2. Use conda's python: python -m streamlit run main.py")
-    print("  3. OR use the helper script: ./run.sh")
-    print("=" * 70)
-    sys.exit(1)
+    # Will be handled in main() function
+    torch = None
 
 # Hard caps to prevent runaway threading / RAM
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -48,21 +41,14 @@ except ImportError:
     HAS_SEABORN = False
 
 # Import matplotlib - required for visualization
+# CRITICAL: Don't exit - show error in Streamlit instead
 try:
     import matplotlib
     matplotlib.use("Agg")  # headless backend for Streamlit
     import matplotlib.pyplot as plt
 except ImportError:
-    print("=" * 70)
-    print("ERROR: matplotlib not found!")
-    print("=" * 70)
-    print("You must run this app from the conda environment.")
-    print("\nSolution:")
-    print("  1. Activate conda environment: conda activate ai-trends")
-    print("  2. Use conda's python: python -m streamlit run main.py")
-    print("  3. OR use the helper script: ./run.sh")
-    print("=" * 70)
-    sys.exit(1)
+    # Will be handled in main() function
+    plt = None
 
 import torchvision.transforms as T
 
@@ -75,6 +61,8 @@ if training_path not in sys.path:
     sys.path.insert(0, training_path)
 
 # Import DETR model - try multiple methods
+# CRITICAL: Don't exit on failure - handle gracefully in functions
+DETRdemo = None
 try:
     from detr_model import DETRdemo
 except ImportError:
@@ -89,30 +77,17 @@ except ImportError:
         # Last resort: try direct import from training
         import importlib.util
         model_file = training_dir / "detr_model.py"
-        if not model_file.exists():
-            print("=" * 70)
-            print("ERROR: Could not find detr_model.py")
-            print("=" * 70)
-            print(f"Expected location: {model_file}")
-            print(f"Current working directory: {os.getcwd()}")
-            print(f"Script location: {current_file}")
-            print("=" * 70)
-            sys.exit(1)
-        spec = importlib.util.spec_from_file_location("detr_model", model_file)
-        if spec and spec.loader:
-            detr_model = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(detr_model)
-            DETRdemo = detr_model.DETRdemo
-        else:
-            print("=" * 70)
-            print("ERROR: Could not load detr_model.py")
-            print("=" * 70)
-            print(f"File exists but could not be loaded: {model_file}")
-            sys.exit(1)
+        if model_file.exists():
+            spec = importlib.util.spec_from_file_location("detr_model", model_file)
+            if spec and spec.loader:
+                detr_model = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(detr_model)
+                DETRdemo = detr_model.DETRdemo
 
-# Torch runtime knobs
-torch.set_grad_enabled(False)
-torch.set_num_threads(1)
+# Torch runtime knobs - only set if torch is available
+if torch is not None:
+    torch.set_grad_enabled(False)
+    torch.set_num_threads(1)
 
 # --- UI tweaks ---
 # Note: st.set_option() for deprecation warnings removed in newer Streamlit versions
@@ -178,10 +153,8 @@ def set_page_bg(png_path: str) -> None:
     except Exception:
         pass  # background is optional
 
-# Try to set background if available
-bg_path = Path(__file__).parent.parent / "DETR" / "Streamlit_Deployment" / "background.png"
-if bg_path.exists():
-    set_page_bg(str(bg_path))
+# CRITICAL: Don't check background at import time - move to function
+# Background image check removed from top-level to prevent file I/O on startup
 
 # ---- transforms ----
 # Keep short/long side ~800 to limit memory usage
@@ -554,6 +527,22 @@ def sidebar_controls():
 # ---- main app ----
 def main():
     """Main detection page."""
+    # CRITICAL: Check dependencies first - don't exit, show error in Streamlit
+    if torch is None:
+        st.error("❌ **PyTorch not found!**")
+        st.info("This app requires PyTorch. Please ensure you're running from the correct environment.")
+        return
+    
+    if plt is None:
+        st.error("❌ **Matplotlib not found!**")
+        st.info("This app requires Matplotlib. Please ensure you're running from the correct environment.")
+        return
+    
+    if DETRdemo is None:
+        st.error("❌ **DETR model class not found!**")
+        st.info("Could not import DETRdemo. Please check that `training/detr_model.py` exists.")
+        return
+    
     st.title("Utility Inventory Detection (DETR)")
     st.caption("Custom trained DETR model for detecting insulators, crossarms, and utility poles.")
 
