@@ -34,6 +34,39 @@ def load_training_log(log_path: str):
 
 def get_dataset_stats():
     """Get dataset statistics from merged dataset."""
+    # Hardcoded stats (datasets folder is excluded from git for Streamlit Cloud)
+    # These are the actual training statistics
+    HARDCODED_STATS = {
+        'train': {
+            'images': 713,
+            'annotations': 809,
+            'per_class': {
+                'insulators': 419,
+                'crossarm': 159,
+                'utility-pole': 135
+            }
+        },
+        'valid': {
+            'images': 134,
+            'annotations': 137,
+            'per_class': {
+                'insulators': 90,
+                'crossarm': 24,
+                'utility-pole': 23
+            }
+        },
+        'test': {
+            'images': 76,
+            'annotations': 78,
+            'per_class': {
+                'insulators': 50,
+                'crossarm': 14,
+                'utility-pole': 14
+            }
+        }
+    }
+    
+    # Try to read from files if available (for local development)
     base_path = Path(__file__).parent.parent / "datasets" / "processed" / "merged"
     
     stats = {
@@ -42,9 +75,11 @@ def get_dataset_stats():
         'test': {'images': 0, 'annotations': 0, 'per_class': {}}
     }
     
+    files_exist = False
     for split in ['train', 'valid', 'test']:
         json_path = base_path / split / "_annotations.coco.json"
         if json_path.exists():
+            files_exist = True
             with open(json_path, 'r') as f:
                 data = json.load(f)
             
@@ -56,6 +91,10 @@ def get_dataset_stats():
                 cat_id = ann['category_id']
                 cat_name = next(c['name'] for c in data['categories'] if c['id'] == cat_id)
                 stats[split]['per_class'][cat_name] = stats[split]['per_class'].get(cat_name, 0) + 1
+    
+    # Use hardcoded stats if files don't exist (Streamlit Cloud)
+    if not files_exist:
+        return HARDCODED_STATS
     
     return stats
 
@@ -115,13 +154,21 @@ def show_about_page(log_path: str = None):
         }
     }
     
-    # Get actual numbers from source datasets (ALL splits: train, valid, test)
+    # Hardcoded dataset stats (datasets folder excluded from git for Streamlit Cloud)
+    HARDCODED_DATASET_STATS = {
+        "Insulators": {"images": 602, "annotations": 599},
+        "Crossarm": {"images": 182, "annotations": 207},
+        "Utility-pole": {"images": 139, "annotations": 218}
+    }
+    
+    # Try to read from files if available (for local development)
     dataset_name_map = {
         "Insulators": "insulators",
         "Crossarm": "crossarm",
         "Utility-pole": "utility-pole"
     }
     
+    files_exist = False
     for class_name in dataset_info.keys():
         dataset_name = dataset_name_map[class_name]
         # Sum across all splits (train, valid, test)
@@ -130,13 +177,19 @@ def show_about_page(log_path: str = None):
         for split in ['train', 'valid', 'test']:
             source_path = base_path / dataset_name / split / "_annotations.coco.json"
             if source_path.exists():
+                files_exist = True
                 with open(source_path, 'r') as f:
                     data = json.load(f)
                 images_total += len(data['images'])
                 annotations_total += len(data['annotations'])
         
-        dataset_info[class_name]["images_used"] = images_total
-        dataset_info[class_name]["annotations_used"] = annotations_total
+        if files_exist:
+            dataset_info[class_name]["images_used"] = images_total
+            dataset_info[class_name]["annotations_used"] = annotations_total
+        else:
+            # Use hardcoded stats (Streamlit Cloud)
+            dataset_info[class_name]["images_used"] = HARDCODED_DATASET_STATS[class_name]["images"]
+            dataset_info[class_name]["annotations_used"] = HARDCODED_DATASET_STATS[class_name]["annotations"]
     
     # Display with actual numbers
     for class_name, info in dataset_info.items():
