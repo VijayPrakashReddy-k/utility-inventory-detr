@@ -238,10 +238,17 @@ def draw_boxes_matplotlib(pil_img, boxes, labels, scores, color_cycle=None, titl
     return fig
 
 # ---- DETR pipeline ----
-@st.cache_resource(show_spinner=True)
+@st.cache_resource(show_spinner="Loading model (first time may take 30-60 seconds)...")
 def load_utility_detr_model():
-    # Clear cache if model file changes - add hash to force refresh
-    """Load the custom trained utility inventory DETR model."""
+    """
+    Load the custom trained utility inventory DETR model.
+    
+    CRITICAL: This function is lazy-loaded - model only loads when first needed.
+    This prevents Streamlit Cloud timeout on startup.
+    """
+    # Force CPU-only mode for Streamlit Cloud compatibility
+    device = torch.device("cpu")
+    
     # Path to trained model - use absolute path
     current_file = Path(__file__).resolve()
     model_path = current_file.parent.parent / "models" / "final" / "best_model.pth"
@@ -281,9 +288,9 @@ def load_utility_detr_model():
         num_decoder_layers=6
     )
     
-    # Load trained weights
+    # Load trained weights - CRITICAL: Always use CPU for Streamlit Cloud
     try:
-        checkpoint = torch.load(model_path, map_location="cpu")
+        checkpoint = torch.load(model_path, map_location=device)
         
         # Handle different checkpoint formats
         if isinstance(checkpoint, dict):
@@ -555,6 +562,7 @@ def main():
 
     if not uploaded:
         st.info("Upload a JPG/PNG image of utility infrastructure to run detection.")
+        st.info("💡 **Note:** First detection may take 30-60 seconds while the model loads.")
         return
 
     try:
@@ -565,8 +573,11 @@ def main():
 
     st.image(image, caption="Uploaded image", use_column_width=True)
 
+    # LAZY LOAD: Model only loads when user uploads an image
+    # This prevents Streamlit Cloud timeout on startup
     try:
-        model = load_utility_detr_model()
+        with st.spinner("Loading model (first time may take 30-60 seconds)..."):
+            model = load_utility_detr_model()
         if model is None:
             return
         
