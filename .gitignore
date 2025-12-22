@@ -72,9 +72,9 @@ models/checkpoints/
 models/final/*.pth
 !models/final/best_model.pth
 
-# Training setup files (not needed for deployment)
-requirements-training.txt
-setup_conda_env.sh
+# Training setup files - NOW INCLUDED (useful for reproducibility)
+# requirements-training.txt - Allow requirements file
+# setup_conda_env.sh - Allow setup script
 
 # Empty directories
 notebooks/

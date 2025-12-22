@@ -1,0 +1,34 @@
+# Training Environment Requirements
+# Install with: pip install -r requirements-training.txt
+
+# Core ML libraries
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Data handling
+numpy>=1.24.0
+pandas>=2.0.0
+Pillow>=10.0.0
+
+# COCO dataset utilities
+pycocotools>=2.0.7
+
+# Training utilities
+tqdm>=4.65.0
+tensorboard>=2.13.0
+
+# Optional: for data visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Optional: Jupyter for notebooks
+jupyter>=1.0.0
+ipykernel>=6.25.0
+
+# For Hungarian matching (optional, has fallback)
+scipy>=1.10.0
+
+# Config file parsing
+pyyaml>=6.0
+
