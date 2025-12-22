@@ -44,27 +44,46 @@ Thumbs.db
 .ipynb_checkpoints/
 *.ipynb
 
-# Model checkpoints (except final best model - tracked with LFS)
-models/*/checkpoint_*.pth
-models/*/epoch_*.pth
+# Only push files needed for Streamlit deployment
+# Everything else stays local
+
+# Training code (not needed for deployment)
+training/
+
+# Data processing scripts - NOW INCLUDED (useful for reproducibility)
+# scripts/ - Allow scripts to be committed
+
+# Datasets - Include metadata only (JSON files), exclude images
+datasets/raw/
+datasets/processed/*/train/*.jpg
+datasets/processed/*/train/*.png
+datasets/processed/*/valid/*.jpg
+datasets/processed/*/valid/*.png
+datasets/processed/*/test/*.jpg
+datasets/processed/*/test/*.png
+# Allow merged dataset JSON files (metadata only)
+!datasets/processed/merged/*/_annotations.coco.json
+# Allow dataset README files
+!datasets/**/README*.txt
+!datasets/**/README*.md
+
+# Model checkpoints (not needed, only best_model.pth is needed)
+models/checkpoints/
+models/final/*.pth
 !models/final/best_model.pth
 
-# Training logs (keep training_log.json for deployment)
-training/logs/*.log
-training/logs/*.txt
+# Training setup files (not needed for deployment)
+requirements-training.txt
+setup_conda_env.sh
 
-# Datasets (too large for git)
-datasets/raw/
-datasets/processed/*/train/
-datasets/processed/*/valid/
-datasets/processed/*/test/
-!datasets/processed/merged/
+# Empty directories
+notebooks/
 
 # Temporary files
 *.tmp
 *.temp
 *.bak
 
-# Streamlit
+# Streamlit secrets
 .streamlit/secrets.toml
 
