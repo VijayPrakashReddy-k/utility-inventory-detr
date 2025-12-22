@@ -32,10 +32,26 @@ All datasets are in **COCO JSON format**:
 
 ## Processing Scripts
 
-See `../scripts/` for data processing scripts:
-- `00_extract_datasets.py`: Extract Roboflow ZIP files
-- `02_clean_datasets.py`: Clean and validate individual datasets
-- `03_merge_datasets.py`: Merge multiple datasets into unified format
+See `../scripts/` for data processing scripts (run in order):
+
+1. **`01_download_datasets.py`**: Download Roboflow ZIP files (or download manually)
+   - Checks for existing ZIP files
+   - Provides download links if missing
+   - Can use Roboflow API if you have an API key
+
+2. **`00_extract_datasets.py`**: Extract downloaded ZIP files
+   - Extracts ZIP files to `datasets/raw/` directory
+   - Verifies dataset structure
+
+3. **`02_clean_datasets.py`**: Clean and validate individual datasets
+   - Removes null annotations
+   - Validates bounding boxes
+   - Saves cleaned datasets to `datasets/processed/`
+
+4. **`03_merge_datasets.py`**: Merge multiple datasets into unified format
+   - Unifies category IDs
+   - Ensures unique image/annotation IDs
+   - Creates final merged dataset in `datasets/processed/merged/`
 
 ## Note
 
