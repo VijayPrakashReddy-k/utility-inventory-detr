@@ -47,8 +47,13 @@ Thumbs.db
 # Only push files needed for Streamlit deployment
 # Everything else stays local
 
-# Training code (not needed for deployment)
-training/
+# Training code - NOW INCLUDED (useful for reproducibility)
+# training/ - Allow training scripts and configs
+# But exclude large log files
+training/logs/*.log
+training/logs/*.txt
+# Allow training_log.json (used by Streamlit About page)
+!training/logs/training_log.json
 
 # Data processing scripts - NOW INCLUDED (useful for reproducibility)
 # scripts/ - Allow scripts to be committed

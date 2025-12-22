@@ -1,0 +1,48 @@
+# DETR Training Configuration for Utility Inventory
+
+# Model settings
+model:
+  num_classes: 3  # insulators, crossarm, utility-pole (+ 1 for no-object = 4 total)
+  hidden_dim: 256
+  nheads: 8
+  num_encoder_layers: 6
+  num_decoder_layers: 6
+  pretrained: true  # Start from COCO pretrained weights
+
+# Data settings
+data:
+  dataset_path: "datasets/processed/merged"
+  train_split: "train"
+  val_split: "valid"
+  test_split: "test"
+  batch_size: 2  # DETR demo works best with smaller batches (1-2)
+  num_workers: 4
+  image_size: 800  # DETR standard input size
+
+# Training settings
+training:
+  num_epochs: 50
+  learning_rate: 1e-4
+  weight_decay: 1e-4
+  lr_drop: 40  # Reduce LR after this epoch (may adjust after epoch 15)
+  lr_gamma: 0.1  # LR reduction factor
+  clip_max_norm: 0.1  # Gradient clipping
+  
+  # Loss weights
+  loss:
+    class_weight: 2.0
+    bbox_weight: 5.0  # Will increase to 10.0 if needed after epoch 15
+    giou_weight: 2.0
+
+# Output settings
+output:
+  checkpoint_dir: "models/checkpoints"
+  final_model_dir: "models/final"
+  save_every: 5  # Save checkpoint every N epochs
+  log_dir: "training/logs"  # For tensorboard
+
+# Device
+# Options: "mps" (Apple Silicon), "cuda" (NVIDIA), "cpu"
+# MPS is automatically detected and used if available on Apple Silicon
+device: "mps"  # Will fallback to CPU if MPS not available
+

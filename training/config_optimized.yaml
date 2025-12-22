@@ -1,0 +1,47 @@
+# DETR Training Configuration - OPTIMIZED VERSION
+# Use this if bbox loss doesn't improve by epoch 15
+
+# Model settings
+model:
+  num_classes: 3
+  hidden_dim: 256
+  nheads: 8
+  num_encoder_layers: 6
+  num_decoder_layers: 6
+  pretrained: true
+
+# Data settings
+data:
+  dataset_path: "datasets/processed/merged"
+  train_split: "train"
+  val_split: "valid"
+  test_split: "test"
+  batch_size: 2
+  num_workers: 4
+  image_size: 800
+
+# Training settings - OPTIMIZED
+training:
+  num_epochs: 50
+  learning_rate: 5e-5  # Lower LR for better convergence
+  weight_decay: 1e-4
+  lr_drop: 30  # Earlier LR drop
+  lr_gamma: 0.1
+  clip_max_norm: 0.1
+  
+  # Loss weights - OPTIMIZED
+  loss:
+    class_weight: 2.0
+    bbox_weight: 10.0  # Increased to emphasize bbox learning
+    giou_weight: 2.0
+
+# Output settings
+output:
+  checkpoint_dir: "models/checkpoints"
+  final_model_dir: "models/final"
+  save_every: 5
+  log_dir: "training/logs"
+
+# Device
+device: "mps"
+
