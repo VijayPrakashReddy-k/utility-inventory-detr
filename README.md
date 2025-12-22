@@ -9,12 +9,38 @@ Training DETR model to detect: **insulators**, **crossarm**, **utility-pole**
 
 ## Quick Start
 
+### 1. Setup Environment
+
 ```bash
 # Activate conda environment
 conda activate ai-trends  # or your env
 
-# Start training
+# Install dependencies
+pip install -r requirements-training.txt
+```
+
+### 2. Prepare Dataset (Run in order)
+
+```bash
 cd utility-detr
+
+# Step 1: Download datasets (or download manually from Roboflow)
+python scripts/01_download_datasets.py
+
+# Step 2: Extract ZIP files
+python scripts/00_extract_datasets.py
+
+# Step 3: Clean datasets
+python scripts/02_clean_datasets.py
+
+# Step 4: Merge datasets
+python scripts/03_merge_datasets.py
+```
+
+### 3. Train Model
+
+```bash
+# Start training
 python training/train.py --config training/config.yaml
 ```
 
