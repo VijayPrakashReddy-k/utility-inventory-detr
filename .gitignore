@@ -58,16 +58,10 @@ training/logs/*.txt
 # Data processing scripts - NOW INCLUDED (useful for reproducibility)
 # scripts/ - Allow scripts to be committed
 
-# Datasets - Include metadata only (JSON files), exclude images
+# Datasets - Include metadata AND images (via Git LFS)
 datasets/raw/
-datasets/processed/*/train/*.jpg
-datasets/processed/*/train/*.png
-datasets/processed/*/valid/*.jpg
-datasets/processed/*/valid/*.png
-datasets/processed/*/test/*.jpg
-datasets/processed/*/test/*.png
-# Allow merged dataset JSON files (metadata only)
-!datasets/processed/merged/*/_annotations.coco.json
+# Allow merged dataset files (JSON metadata + images via LFS)
+!datasets/processed/merged/
 # Allow dataset README files
 !datasets/**/README*.txt
 !datasets/**/README*.md
