@@ -667,6 +667,205 @@ def main():
             "ymax": [b[3] for b in boxes],
         }).sort_values("confidence", ascending=False).reset_index(drop=True)
         st.dataframe(df, use_container_width=True)
+    
+    # ============================================================================
+    # HITL FEEDBACK COLLECTION
+    # ============================================================================
+    st.divider()
+    st.subheader("💬 Provide Feedback (Human-In-The-Loop)")
+    st.caption("Help improve the model by providing feedback on detections")
+    
+    # Import feedback handler
+    try:
+        from feedback_handler import FeedbackHandler
+        feedback_handler = FeedbackHandler()
+    except ImportError:
+        st.warning("⚠️ Feedback handler not available. Install required dependencies.")
+        feedback_handler = None
+    
+    if feedback_handler:
+        # Initialize session state for feedback
+        if 'feedback_data' not in st.session_state:
+            st.session_state.feedback_data = {
+                'overall_feedback': None,
+                'detection_feedback': {},
+                'user_notes': ''
+            }
+        
+        # Prepare detection data
+        detections = []
+        for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
+            detections.append({
+                "index": i,
+                "label": label,
+                "confidence": float(score),
+                "bbox": [float(box[0]), float(box[1]), float(box[2]), float(box[3])]
+            })
+        
+        # Overall feedback
+        st.write("**Overall Image Feedback:**")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("✅ All Correct", use_container_width=True, key="feedback_correct"):
+                st.session_state.feedback_data['overall_feedback'] = "correct"
+                st.rerun()
+        with col2:
+            if st.button("⚠️ Some Issues", use_container_width=True, key="feedback_partial"):
+                st.session_state.feedback_data['overall_feedback'] = "partial"
+                st.rerun()
+        with col3:
+            if st.button("❌ Major Issues", use_container_width=True, key="feedback_incorrect"):
+                st.session_state.feedback_data['overall_feedback'] = "incorrect"
+                st.rerun()
+        
+        # Show selected overall feedback
+        if st.session_state.feedback_data['overall_feedback']:
+            feedback_icons = {"correct": "✅", "partial": "⚠️", "incorrect": "❌"}
+            st.info(f"{feedback_icons[st.session_state.feedback_data['overall_feedback']]} Overall feedback: **{st.session_state.feedback_data['overall_feedback']}**")
+        
+        # Individual detection feedback
+        if len(boxes) > 0:
+            st.write("**Individual Detection Feedback:**")
+            
+            # Show feedback options for each detection
+            for det in detections:
+                det_key = f"det_{det['index']}"
+                if det_key not in st.session_state.feedback_data['detection_feedback']:
+                    st.session_state.feedback_data['detection_feedback'][det_key] = None
+                
+                with st.expander(f"Detection {det['index']+1}: {det['label']} (confidence: {det['confidence']:.2f})"):
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        if st.button("✅ Correct", key=f"{det_key}_correct"):
+                            st.session_state.feedback_data['detection_feedback'][det_key] = {
+                                "index": det['index'],
+                                "action": "correct",
+                                "label": det['label'],
+                                "bbox": det['bbox']
+                            }
+                            st.rerun()
+                    
+                    with col2:
+                        if st.button("✏️ Wrong Label", key=f"{det_key}_wrong_label"):
+                            st.session_state.feedback_data['detection_feedback'][det_key] = {
+                                "index": det['index'],
+                                "action": "wrong_label",
+                                "label": det['label'],
+                                "bbox": det['bbox']
+                            }
+                            st.rerun()
+                    
+                    with col3:
+                        if st.button("📦 Wrong Box", key=f"{det_key}_wrong_box"):
+                            st.session_state.feedback_data['detection_feedback'][det_key] = {
+                                "index": det['index'],
+                                "action": "wrong_box",
+                                "label": det['label'],
+                                "bbox": det['bbox']
+                            }
+                            st.rerun()
+                    
+                    with col4:
+                        if st.button("🗑️ Remove", key=f"{det_key}_remove"):
+                            st.session_state.feedback_data['detection_feedback'][det_key] = {
+                                "index": det['index'],
+                                "action": "remove",
+                                "label": det['label'],
+                                "bbox": det['bbox']
+                            }
+                            st.rerun()
+                    
+                    # Show correction options if wrong label selected
+                    if (st.session_state.feedback_data['detection_feedback'].get(det_key, {}).get('action') == 'wrong_label'):
+                        corrected_label = st.selectbox(
+                            "Select correct label:",
+                            ["insulators", "crossarm", "utility-pole"],
+                            key=f"{det_key}_label_select"
+                        )
+                        st.session_state.feedback_data['detection_feedback'][det_key]['corrected_label'] = corrected_label
+                    
+                    # Show current feedback status
+                    current_feedback = st.session_state.feedback_data['detection_feedback'].get(det_key)
+                    if current_feedback:
+                        action_icons = {
+                            "correct": "✅",
+                            "wrong_label": "✏️",
+                            "wrong_box": "📦",
+                            "remove": "🗑️"
+                        }
+                        action_text = current_feedback.get('action', '')
+                        if action_text == 'wrong_label' and 'corrected_label' in current_feedback:
+                            st.success(f"{action_icons.get(action_text, '')} Will correct to: **{current_feedback['corrected_label']}**")
+                        else:
+                            st.success(f"{action_icons.get(action_text, '')} Action: **{action_text}**")
+        
+        # User notes
+        user_notes = st.text_area(
+            "Additional Notes (optional):",
+            value=st.session_state.feedback_data.get('user_notes', ''),
+            key="feedback_notes"
+        )
+        st.session_state.feedback_data['user_notes'] = user_notes
+        
+        # Save feedback button
+        if st.button("💾 Save Feedback", type="primary"):
+            overall_feedback = st.session_state.feedback_data.get('overall_feedback')
+            detection_feedback_list = [
+                v for v in st.session_state.feedback_data['detection_feedback'].values()
+                if v is not None
+            ]
+            user_notes = st.session_state.feedback_data.get('user_notes', '')
+            
+            if overall_feedback or detection_feedback_list or user_notes:
+                try:
+                    feedback_file = feedback_handler.save_feedback(
+                        image=img_rgb,
+                        detections=detections,
+                        overall_feedback=overall_feedback,
+                        detection_feedback=detection_feedback_list,
+                        user_notes=user_notes if user_notes else None
+                    )
+                    st.success(f"✅ Feedback saved!")
+                    st.info(f"File: `{feedback_file}`")
+                    
+                    # Reset feedback data
+                    st.session_state.feedback_data = {
+                        'overall_feedback': None,
+                        'detection_feedback': {},
+                        'user_notes': ''
+                    }
+                    
+                    # Show feedback stats
+                    stats = feedback_handler.get_feedback_stats()
+                    st.info(f"**Total feedback collected:** {stats['total_feedback']} images")
+                except Exception as e:
+                    st.error(f"Error saving feedback: {e}")
+                    st.exception(e)
+            else:
+                st.warning("Please provide at least one piece of feedback before saving.")
+        
+        # Export feedback section
+        st.divider()
+        st.subheader("📤 Export Feedback")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("📊 View Feedback Stats"):
+                stats = feedback_handler.get_feedback_stats()
+                st.json(stats)
+        
+        with col2:
+            if st.button("📥 Export to COCO Format"):
+                try:
+                    export_path = feedback_handler.export_to_coco()
+                    st.success(f"✅ Feedback exported!")
+                    st.info(f"File: `{export_path}`")
+                    st.info("💡 This COCO file can be merged with your training dataset for retraining")
+                except Exception as e:
+                    st.error(f"Error exporting feedback: {e}")
+                    st.exception(e)
 
 # ---- About page ----
 def show_about():
