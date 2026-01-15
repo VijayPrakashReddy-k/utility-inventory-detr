@@ -40,6 +40,14 @@ try:
 except ImportError:
     HAS_SEABORN = False
 
+# Try to import streamlit-drawable-canvas for visual box editing
+# Use the maintained fork from GitHub that fixes Streamlit compatibility
+try:
+    from streamlit_drawable_canvas import st_canvas
+    HAS_CANVAS = True
+except ImportError:
+    HAS_CANVAS = False
+
 # Import matplotlib - required for visualization
 # CRITICAL: Don't exit - show error in Streamlit instead
 try:
@@ -186,26 +194,17 @@ def rescale_bboxes(out_bbox: torch.Tensor, size) -> torch.Tensor:
 # ---- drawing helpers ----
 def draw_boxes_matplotlib(pil_img, boxes, labels, scores, color_cycle=None, title=None):
     """Draw bounding boxes on image using matplotlib."""
-    # local default palette if none is provided
-    if color_cycle is None:
-        color_cycle = [
-            (0.000, 0.447, 0.741),  # Blue
-            (0.850, 0.325, 0.098),  # Red
-            (0.929, 0.694, 0.125),  # Yellow
-            (0.494, 0.184, 0.556),  # Purple
-            (0.466, 0.674, 0.188),  # Green
-            (0.301, 0.745, 0.933),  # Cyan
-        ]
+    # Use green color for all boxes
+    green_color = (0.0, 0.8, 0.0)  # Bright green (RGB normalized)
 
     fig, ax = plt.subplots(figsize=(12, 8))
     ax.imshow(pil_img)
 
-    # repeat colors to cover all boxes
-    colors = color_cycle * 100
-    for (xmin, ymin, xmax, ymax), name, sc, c in zip(boxes, labels, scores, colors):
+    # Draw all boxes in green with solid lines (thicker)
+    for (xmin, ymin, xmax, ymax), name, sc in zip(boxes, labels, scores):
         ax.add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
-                                   fill=False, color=c, linewidth=2.5))
-        ax.text(xmin, ymin, f"{name}: {sc:.2f}", fontsize=13,
+                                   fill=False, color=green_color, linewidth=4, linestyle='-'))
+        ax.text(xmin, ymin, f"{name}: {sc:.2f}", fontsize=14, weight='bold',
                 bbox=dict(facecolor="yellow", alpha=0.5))
 
     ax.axis("off")
@@ -213,6 +212,2334 @@ def draw_boxes_matplotlib(pil_img, boxes, labels, scores, color_cycle=None, titl
         ax.set_title(title)
     fig.tight_layout(pad=0.0)
     return fig
+
+# ---- Canvas Editor Functions ----
+def display_advanced_obb_editor(img_rgb, boxes, labels, scores, indices):
+    """
+    Advanced OBB (Oriented Bounding Box) Editor
+    
+    Features:
+    - Draw horizontal and rotated bounding boxes
+    - Click and drag to create boxes
+    - Rotate boxes by dragging rotation handle
+    - Move boxes by dragging center
+    - Resize boxes by dragging corners
+    - Delete boxes
+    - Support for multiple annotation formats
+    - Save edits back to feedback system
+    
+    Returns:
+        JSON string of edited boxes when saved, None otherwise
+    """
+    import base64
+    import json
+    from io import BytesIO
+    
+    # Convert image to base64
+    buffered = BytesIO()
+    img_rgb.save(buffered, format="PNG")
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
+    
+    # Prepare existing boxes (convert xyxy to OBB format)
+    annotations_json = json.dumps([
+        {
+            'type': 'obb',
+            'cx': (box[0] + box[2]) / 2,  # center x
+            'cy': (box[1] + box[3]) / 2,  # center y
+            'width': box[2] - box[0],
+            'height': box[3] - box[1],
+            'angle': 0,  # rotation angle in radians
+            'label': label,
+            'score': float(score),
+            'index': int(idx),
+            'color': f'hsl({(int(idx) * 137) % 360}, 70%, 50%)'  # Unique color per box
+        }
+        for box, label, score, idx in zip(boxes, labels, scores, indices)
+    ])
+    
+    html_code = f"""
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        
+        .editor-container {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            padding: 20px 20px 10px 20px;  /* Reduced bottom padding from 20px to 10px */
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }}
+        
+        .toolbar {{
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+            background: rgba(255,255,255,0.95);
+            padding: 15px;
+            border-radius: 8px;
+            align-items: center;
+        }}
+        
+        .tool-btn {{
+            padding: 10px 20px;
+            border: 2px solid transparent;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: white;
+            color: #333;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        
+        .tool-btn:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }}
+        
+        .tool-btn.active {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: #667eea;
+        }}
+        
+        .tool-btn.danger {{
+            background: #ff4757;
+            color: white;
+        }}
+        
+        .tool-btn.danger:hover {{
+            background: #ee5a6f;
+        }}
+        
+        .canvas-wrapper {{
+            position: relative;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        }}
+        
+        #canvas {{
+            display: block;
+            cursor: crosshair;
+            width: 100%;
+            height: auto;
+        }}
+        
+        .info-panel {{
+            margin-top: 15px;
+            padding: 15px;
+            background: rgba(255,255,255,0.95);
+            border-radius: 8px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }}
+        
+        .info-item {{
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }}
+        
+        .info-label {{
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        
+        .info-value {{
+            font-size: 16px;
+            font-weight: 700;
+            color: #333;
+        }}
+        
+        .label-input {{
+            padding: 8px 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }}
+        
+        .label-input:focus {{
+            outline: none;
+            border-color: #667eea;
+        }}
+        
+        .instructions {{
+            background: #f0f4ff;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #555;
+            border-left: 4px solid #667eea;
+            margin-bottom: 0;  /* Remove any bottom margin */
+        }}
+        
+        @keyframes pulse {{
+            0%, 100% {{ opacity: 1; transform: scale(1); }}
+            50% {{ opacity: 0.6; transform: scale(1.2); }}
+        }}
+    </style>
+    
+    <div class="editor-container">
+        <!-- Toolbar -->
+        <div class="toolbar">
+            <button class="tool-btn" id="drawBtn" onclick="setMode('draw')">
+                <span>✏️</span> Draw Box
+            </button>
+            <button class="tool-btn active" id="selectBtn" onclick="setMode('select')">
+                <span>👆</span> Select/Edit
+            </button>
+            <button class="tool-btn danger" onclick="deleteSelected()">
+                <span>🗑️</span> Delete
+            </button>
+            <button class="tool-btn danger" onclick="clearAll()">
+                <span>🧹</span> Clear All
+            </button>
+            <button class="tool-btn" onclick="saveBoxes()" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);">
+                <span>💾</span> Save Edits
+            </button>
+            
+            <div style="flex: 1;"></div>
+            
+            <input type="text" id="labelInput" class="label-input" placeholder="Label (e.g., insulators)" value="insulators">
+            <input type="number" id="scoreInput" class="label-input" placeholder="Score" value="1.0" min="0" max="1" step="0.01" style="width: 100px;" title="Confidence score for new boxes (0.0-1.0)">
+        </div>
+        
+        <!-- Canvas -->
+        <div class="canvas-wrapper">
+            <canvas id="canvas" width="{img_rgb.width}" height="{img_rgb.height}"></canvas>
+        </div>
+        
+        <!-- Info Panel -->
+        <div class="info-panel">
+            <div class="info-item">
+                <div class="info-label">Mode</div>
+                <div class="info-value" id="modeDisplay">Select/Edit</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Total Boxes</div>
+                <div class="info-value" id="boxCount">0</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Selected</div>
+                <div class="info-value" id="selectedInfo">None</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Angle</div>
+                <div class="info-value" id="angleInfo">0°</div>
+            </div>
+        </div>
+        
+        <!-- JSON Output Panel (visible after Save Edits) -->
+        <div id="jsonOutputPanel" style="display: none; margin-top: 20px; padding: 20px; background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-radius: 12px; border: 2px solid #4CAF50; box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3 style="margin: 0; color: #2E7D32; font-size: 18px;">📋 Copy This JSON</h3>
+                <button onclick="copyJsonToClipboard()" id="copyBtn" style="padding: 10px 20px; background: linear-gradient(135deg, #4CAF50 0%, #66BB6A 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; font-size: 14px; box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3); transition: all 0.3s ease;">
+                    📋 Copy to Clipboard
+                </button>
+            </div>
+            <textarea id="jsonOutput" readonly onclick="this.select()" style="width: 100%; height: 200px; font-family: 'Courier New', monospace; font-size: 12px; padding: 15px; border: 2px solid #81C784; border-radius: 8px; background: #FFFFFF; resize: vertical; cursor: text; line-height: 1.5;"></textarea>
+            <div style="margin-top: 15px; padding: 12px; background: rgba(255, 255, 255, 0.95); border-radius: 8px; font-size: 13px; color: #1B5E20; border-left: 4px solid #4CAF50;">
+                <div style="margin-bottom: 8px;"><strong>✅ Next Step:</strong> Copy the JSON above, paste it in the <strong>"📥 Paste JSON data here"</strong> field below, then click <strong>"✅ Apply Edited Data"</strong></div>
+                <div style="padding: 8px; background: #FFF9C4; border-left: 3px solid #FBC02D; border-radius: 4px; font-size: 12px; color: #F57F17;">
+                    <strong>💡 Score Info:</strong><br>
+                    • <strong>Original detections</strong> (edited) → Keep real scores (e.g., 0.79, 0.85)<br>
+                    • <strong>Newly drawn boxes</strong> (index: -1) → Get placeholder score: 1.0
+                </div>
+            </div>
+        </div>
+        
+        <!-- Instructions -->
+        <div class="instructions">
+            <strong>💡 How to Edit Boxes:</strong><br>
+            <strong>Draw:</strong> Click "✏️ Draw Box" and drag on image (auto-selects after drawing)<br>
+            <strong>🟠 Rotate:</strong> Drag the <span style="color: #ff6b00; font-weight: bold;">ORANGE CIRCLE ↻</span> above box<br>
+            <strong>🟢 Resize:</strong> Drag the <span style="color: #00ff00; font-weight: bold;">GREEN SQUARES ⤡</span> at corners<br>
+            <strong>🔵 Move:</strong> Drag the <span style="color: #0066ff; font-weight: bold;">BLUE CIRCLE ✛</span> at center<br>
+            <strong>Delete:</strong> Press Delete key | <strong>Switch:</strong> Press R key
+        </div>
+    </div>
+    
+    <!-- Load Streamlit component library for bidirectional communication -->
+    <script>
+        // Initialize Streamlit API if not already available
+        if (typeof Streamlit === 'undefined') {{
+            window.Streamlit = {{
+                setComponentValue: function(value) {{
+                    // Send message to parent window (Streamlit)
+                    window.parent.postMessage({{
+                        type: 'streamlit:setComponentValue',
+                        value: value
+                    }}, '*');
+                }},
+                setFrameHeight: function(height) {{
+                    window.parent.postMessage({{
+                        type: 'streamlit:setFrameHeight',
+                        height: height
+                    }}, '*');
+                }}
+            }};
+        }}
+    </script>
+    
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        img.src = 'data:image/png;base64,{img_base64}';
+        
+        let boxes = {annotations_json};
+        let mode = 'select';  // Default to Select/Edit mode to edit original detections
+        let selectedBox = null;
+        let isDragging = false;
+        let dragHandle = null;
+        let startX, startY;
+        let currentBox = null;
+        
+        img.onload = () => {{
+            canvas.style.cursor = 'pointer';  // Set cursor for Select/Edit mode
+            render();
+            updateInfo();
+        }};
+        
+        function setMode(newMode) {{
+            mode = newMode;
+            selectedBox = null;
+            document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+            if (newMode === 'draw') {{
+                document.getElementById('drawBtn').classList.add('active');
+                canvas.style.cursor = 'crosshair';
+                document.getElementById('modeDisplay').textContent = 'Draw';
+            }} else {{
+                document.getElementById('selectBtn').classList.add('active');
+                canvas.style.cursor = 'pointer';
+                document.getElementById('modeDisplay').textContent = 'Select/Edit';
+            }}
+            render();
+            updateInfo();
+        }}
+        
+        function render() {{
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+            
+            // Draw all boxes
+            boxes.forEach((box, idx) => {{
+                drawOBB(box, idx === selectedBox);
+            }});
+            
+            // Draw current box being created
+            if (currentBox) {{
+                 ctx.save();
+                 ctx.setLineDash([5, 5]);
+                 ctx.strokeStyle = '#00ff00';
+                 ctx.lineWidth = 6;  // Extra thick for drawing preview
+                 const hw = currentBox.width / 2;
+                const hh = currentBox.height / 2;
+                ctx.translate(currentBox.cx, currentBox.cy);
+                ctx.rotate(currentBox.angle);
+                ctx.strokeRect(-hw, -hh, currentBox.width, currentBox.height);
+                ctx.restore();
+            }}
+        }}
+        
+        function drawOBB(box, isSelected) {{
+            const hw = box.width / 2;
+            const hh = box.height / 2;
+            
+            ctx.save();
+            ctx.translate(box.cx, box.cy);
+            ctx.rotate(box.angle);
+            
+             // Draw box with very thick lines
+             ctx.strokeStyle = isSelected ? '#00ff00' : (box.color || '#ff0000');
+             ctx.lineWidth = isSelected ? 8 : 6;  // Extra thick for visibility
+             ctx.strokeRect(-hw, -hh, box.width, box.height);
+            
+            // Draw label
+            ctx.fillStyle = box.color || '#ff0000';
+            ctx.font = 'bold 14px Arial';
+            const label = `${{box.label}} ${{box.score ? box.score.toFixed(2) : ''}}`;
+            ctx.fillText(label, -hw, -hh - 5);
+            
+            if (isSelected) {{
+                 // Draw corner resize handles with ENLARGE icon (⤡)
+                 const cornerSize = 22;  // Larger handles
+                 const corners = [
+                     {{x: -hw, y: -hh, dir: 'nw'}}, {{x: hw, y: -hh, dir: 'ne'}},
+                     {{x: hw, y: hh, dir: 'se'}}, {{x: -hw, y: hh, dir: 'sw'}}
+                 ];
+                 corners.forEach(c => {{
+                     // Green rounded square background
+                     ctx.fillStyle = '#00ff00';
+                     ctx.strokeStyle = 'white';
+                     ctx.lineWidth = 4;  // Thicker outline
+                     ctx.beginPath();
+                     ctx.roundRect(c.x - cornerSize/2, c.y - cornerSize/2, cornerSize, cornerSize, 3);
+                     ctx.fill();
+                     ctx.stroke();
+                     
+                     // Draw ENLARGE/EXPAND icon with arrows pointing outward
+                     ctx.strokeStyle = 'black';
+                     ctx.lineWidth = 2.5;
+                     ctx.lineCap = 'round';
+                     
+                     // Diagonal double arrows pointing outward (⤡ icon)
+                     const arrowSize = 6;
+                     const offsetX = (c.dir === 'nw' || c.dir === 'sw') ? -1 : 1;
+                     const offsetY = (c.dir === 'nw' || c.dir === 'ne') ? -1 : 1;
+                     
+                     // Main diagonal line
+                     ctx.beginPath();
+                     ctx.moveTo(c.x - arrowSize * offsetX * 0.5, c.y - arrowSize * offsetY * 0.5);
+                     ctx.lineTo(c.x + arrowSize * offsetX * 0.5, c.y + arrowSize * offsetY * 0.5);
+                     
+                     // Arrow head 1
+                     ctx.moveTo(c.x + arrowSize * offsetX * 0.5, c.y + arrowSize * offsetY * 0.5);
+                     ctx.lineTo(c.x + arrowSize * offsetX * 0.5 - 3 * offsetX, c.y + arrowSize * offsetY * 0.5);
+                     ctx.moveTo(c.x + arrowSize * offsetX * 0.5, c.y + arrowSize * offsetY * 0.5);
+                     ctx.lineTo(c.x + arrowSize * offsetX * 0.5, c.y + arrowSize * offsetY * 0.5 - 3 * offsetY);
+                     
+                     // Arrow head 2 (opposite direction for resize feel)
+                     ctx.moveTo(c.x - arrowSize * offsetX * 0.5, c.y - arrowSize * offsetY * 0.5);
+                     ctx.lineTo(c.x - arrowSize * offsetX * 0.5 + 3 * offsetX, c.y - arrowSize * offsetY * 0.5);
+                     ctx.moveTo(c.x - arrowSize * offsetX * 0.5, c.y - arrowSize * offsetY * 0.5);
+                     ctx.lineTo(c.x - arrowSize * offsetX * 0.5, c.y - arrowSize * offsetY * 0.5 + 3 * offsetY);
+                     
+                     ctx.stroke();
+                 }});
+                
+                 // Draw rotation handle with ROTATE icon (↻)
+                 const rotY = -hh - 30;
+                 const rotRadius = 16;  // Larger rotation handle
+                 ctx.beginPath();
+                 ctx.arc(0, rotY, rotRadius, 0, 2 * Math.PI);
+                 ctx.fillStyle = '#ff6b00';
+                 ctx.fill();
+                 ctx.strokeStyle = 'white';
+                 ctx.lineWidth = 4;  // Thicker outline
+                 ctx.stroke();
+                 
+                 // Draw CIRCULAR ROTATION arrow (↻ icon)
+                 ctx.strokeStyle = 'white';
+                 ctx.lineWidth = 3;
+                 ctx.lineCap = 'round';
+                 
+                 // Circular arrow (270 degrees)
+                 ctx.beginPath();
+                 ctx.arc(0, rotY, 7, -Math.PI * 0.7, Math.PI * 0.7, false);
+                 ctx.stroke();
+                 
+                 // Arrow head (pointing clockwise)
+                 ctx.fillStyle = 'white';
+                 ctx.beginPath();
+                 ctx.moveTo(Math.cos(Math.PI * 0.7) * 7, rotY + Math.sin(Math.PI * 0.7) * 7);
+                 ctx.lineTo(Math.cos(Math.PI * 0.7) * 7 - 5, rotY + Math.sin(Math.PI * 0.7) * 7 - 2);
+                 ctx.lineTo(Math.cos(Math.PI * 0.7) * 7 - 3, rotY + Math.sin(Math.PI * 0.7) * 7 + 4);
+                 ctx.closePath();
+                 ctx.fill();
+                 
+                 // Add small circle in center for better visibility
+                 ctx.beginPath();
+                 ctx.arc(0, rotY, 2, 0, 2 * Math.PI);
+                 ctx.fillStyle = 'white';
+                 ctx.fill();
+                
+                 // Draw center MOVE/ADJUST handle with 4-way arrows icon (⥮)
+                 const centerSize = 20;  // Larger center handle
+                 ctx.beginPath();
+                 ctx.arc(0, 0, centerSize/2, 0, 2 * Math.PI);
+                 ctx.fillStyle = '#0066ff';
+                 ctx.fill();
+                 ctx.strokeStyle = 'white';
+                 ctx.lineWidth = 4;  // Thicker outline
+                 ctx.stroke();
+                 
+                 // Draw MOVE icon with 4-directional arrows (⥮)
+                 ctx.strokeStyle = 'white';
+                 ctx.lineWidth = 2.5;
+                 ctx.lineCap = 'round';
+                 ctx.lineJoin = 'round';
+                 
+                 const arrowLen = 6;
+                 const arrowHeadSize = 3;
+                 
+                 // Draw 4 arrows pointing outward
+                 // Up arrow
+                 ctx.beginPath();
+                 ctx.moveTo(0, 0);
+                 ctx.lineTo(0, -arrowLen);
+                 ctx.moveTo(-arrowHeadSize, -arrowLen + arrowHeadSize);
+                 ctx.lineTo(0, -arrowLen);
+                 ctx.lineTo(arrowHeadSize, -arrowLen + arrowHeadSize);
+                 ctx.stroke();
+                 
+                 // Down arrow
+                 ctx.beginPath();
+                 ctx.moveTo(0, 0);
+                 ctx.lineTo(0, arrowLen);
+                 ctx.moveTo(-arrowHeadSize, arrowLen - arrowHeadSize);
+                 ctx.lineTo(0, arrowLen);
+                 ctx.lineTo(arrowHeadSize, arrowLen - arrowHeadSize);
+                 ctx.stroke();
+                 
+                 // Left arrow
+                 ctx.beginPath();
+                 ctx.moveTo(0, 0);
+                 ctx.lineTo(-arrowLen, 0);
+                 ctx.moveTo(-arrowLen + arrowHeadSize, -arrowHeadSize);
+                 ctx.lineTo(-arrowLen, 0);
+                 ctx.lineTo(-arrowLen + arrowHeadSize, arrowHeadSize);
+                 ctx.stroke();
+                 
+                 // Right arrow
+                 ctx.beginPath();
+                 ctx.moveTo(0, 0);
+                 ctx.lineTo(arrowLen, 0);
+                 ctx.moveTo(arrowLen - arrowHeadSize, -arrowHeadSize);
+                 ctx.lineTo(arrowLen, 0);
+                 ctx.lineTo(arrowLen - arrowHeadSize, arrowHeadSize);
+                 ctx.stroke();
+                 
+                 // Center dot for better visibility
+                 ctx.beginPath();
+                 ctx.arc(0, 0, 2, 0, 2 * Math.PI);
+                 ctx.fillStyle = 'white';
+                 ctx.fill();
+            }}
+            
+            ctx.restore();
+        }}
+        
+        function getMousePos(e) {{
+            const rect = canvas.getBoundingClientRect();
+            return {{
+                x: (e.clientX - rect.left) * (canvas.width / rect.width),
+                y: (e.clientY - rect.top) * (canvas.height / rect.height)
+            }};
+        }}
+        
+        function getHandle(pos, box) {{
+            const hw = box.width / 2;
+            const hh = box.height / 2;
+            
+            // Transform point to box local coordinates
+            const dx = pos.x - box.cx;
+            const dy = pos.y - box.cy;
+            const cos = Math.cos(-box.angle);
+            const sin = Math.sin(-box.angle);
+            const lx = dx * cos - dy * sin;
+            const ly = dx * sin + dy * cos;
+            
+            // Check rotation handle (larger hit area matching new size)
+            if (Math.hypot(lx, ly + hh + 25) < 16) return 'rotate';
+            
+            // Check center (larger hit area matching new size)
+            if (Math.hypot(lx, ly) < 20) return 'center';
+            
+            // Check corners (larger hit area matching new size)
+            const corners = [
+                {{x: -hw, y: -hh, name: 'nw'}}, {{x: hw, y: -hh, name: 'ne'}},
+                {{x: hw, y: hh, name: 'se'}}, {{x: -hw, y: hh, name: 'sw'}}
+            ];
+            for (let c of corners) {{
+                if (Math.hypot(lx - c.x, ly - c.y) < 22) return c.name;
+            }}
+            
+            // Check if inside box
+            if (Math.abs(lx) <= hw && Math.abs(ly) <= hh) return 'center';
+            
+            return null;
+        }}
+        
+        canvas.addEventListener('mousedown', (e) => {{
+            const pos = getMousePos(e);
+            
+            if (mode === 'draw') {{
+                isDragging = true;
+                startX = pos.x;
+                startY = pos.y;
+                currentBox = {{
+                    cx: pos.x,
+                    cy: pos.y,
+                    width: 0,
+                    height: 0,
+                    angle: 0
+                }};
+            }} else if (mode === 'select') {{
+                // Find clicked box
+                for (let i = boxes.length - 1; i >= 0; i--) {{
+                    const handle = getHandle(pos, boxes[i]);
+                    if (handle) {{
+                        selectedBox = i;
+                        dragHandle = handle;
+                        isDragging = true;
+                        startX = pos.x;
+                        startY = pos.y;
+                        render();
+                        updateInfo();
+                        return;
+                    }}
+                }}
+                selectedBox = null;
+                render();
+                updateInfo();
+            }}
+        }});
+        
+        canvas.addEventListener('mousemove', (e) => {{
+            if (!isDragging) return;
+            
+            const pos = getMousePos(e);
+            
+            if (mode === 'draw' && currentBox) {{
+                const dx = pos.x - startX;
+                const dy = pos.y - startY;
+                currentBox.width = Math.abs(dx);
+                currentBox.height = Math.abs(dy);
+                currentBox.cx = startX + dx / 2;
+                currentBox.cy = startY + dy / 2;
+                render();
+            }} else if (mode === 'select' && selectedBox !== null) {{
+                const box = boxes[selectedBox];
+                const dx = pos.x - startX;
+                const dy = pos.y - startY;
+                
+                if (dragHandle === 'center') {{
+                    // Move the box
+                    box.cx += dx;
+                    box.cy += dy;
+                }} else if (dragHandle === 'rotate') {{
+                    // Rotate the box
+                    const angle = Math.atan2(pos.y - box.cy, pos.x - box.cx);
+                    box.angle = angle + Math.PI / 2;
+                }} else {{
+                    // Resize from corners
+                    // Transform mouse movement to box local coordinates
+                    const cos = Math.cos(-box.angle);
+                    const sin = Math.sin(-box.angle);
+                    const localDx = dx * cos - dy * sin;
+                    const localDy = dx * sin + dy * cos;
+                    
+                    // Resize based on which corner
+                    if (dragHandle === 'se') {{
+                        box.width = Math.max(20, box.width + localDx * 2);
+                        box.height = Math.max(20, box.height + localDy * 2);
+                    }} else if (dragHandle === 'sw') {{
+                        box.width = Math.max(20, box.width - localDx * 2);
+                        box.height = Math.max(20, box.height + localDy * 2);
+                    }} else if (dragHandle === 'ne') {{
+                        box.width = Math.max(20, box.width + localDx * 2);
+                        box.height = Math.max(20, box.height - localDy * 2);
+                    }} else if (dragHandle === 'nw') {{
+                        box.width = Math.max(20, box.width - localDx * 2);
+                        box.height = Math.max(20, box.height - localDy * 2);
+                    }}
+                }}
+                
+                startX = pos.x;
+                startY = pos.y;
+                render();
+                updateInfo();
+            }}
+        }});
+        
+        canvas.addEventListener('mouseup', (e) => {{
+            if (mode === 'draw' && currentBox && currentBox.width > 10 && currentBox.height > 10) {{
+                const newBoxIndex = boxes.length;
+                const scoreValue = parseFloat(document.getElementById('scoreInput').value) || 1.0;
+                boxes.push({{
+                    type: 'obb',
+                    cx: currentBox.cx,
+                    cy: currentBox.cy,
+                    width: currentBox.width,
+                    height: currentBox.height,
+                    angle: 0,
+                    label: document.getElementById('labelInput').value || 'object',
+                    score: Math.max(0, Math.min(1, scoreValue)),  // Clamp between 0 and 1
+                    color: `hsl(${{(boxes.length * 137) % 360}}, 70%, 50%)`,
+                    index: -1
+                }});
+                
+                // Auto-switch to select mode and select the newly created box
+                setMode('select');
+                selectedBox = newBoxIndex;
+                
+                updateInfo();
+            }}
+            
+            isDragging = false;
+            currentBox = null;
+            dragHandle = null;
+            render();
+        }});
+        
+        function deleteSelected() {{
+            if (selectedBox !== null) {{
+                boxes.splice(selectedBox, 1);
+                selectedBox = null;
+                render();
+                updateInfo();
+            }}
+        }}
+        
+        function clearAll() {{
+            if (confirm('Clear all boxes?')) {{
+                boxes = [];
+                selectedBox = null;
+                render();
+                updateInfo();
+            }}
+        }}
+        
+        function updateInfo() {{
+            document.getElementById('boxCount').textContent = boxes.length;
+            if (selectedBox !== null && selectedBox < boxes.length) {{
+                const box = boxes[selectedBox];
+                document.getElementById('selectedInfo').textContent = `Box ${{selectedBox + 1}} (${{box.label}})`;
+                document.getElementById('angleInfo').textContent = `${{(box.angle * 180 / Math.PI).toFixed(1)}}°`;
+            }} else {{
+                document.getElementById('selectedInfo').textContent = 'None';
+                document.getElementById('angleInfo').textContent = '0°';
+            }}
+        }}
+        
+        function saveBoxes() {{
+            // Confirmation dialog
+            const message = boxes.length === 0 
+                ? 'No boxes to save. Do you want to clear all detections?'
+                : 'Save ' + boxes.length + ' box(es) and update feedback?\\n\\nThis will overwrite the current detections.';
+            
+            if (!confirm(message)) {{
+                return; // User cancelled
+            }}
+            
+            // Convert OBB boxes to axis-aligned bounding boxes for feedback
+            const savedBoxes = boxes.map(box => {{
+                // Calculate the four corners of the rotated box
+                const hw = box.width / 2;
+                const hh = box.height / 2;
+                const cos = Math.cos(box.angle);
+                const sin = Math.sin(box.angle);
+                
+                const corners = [
+                    {{x: -hw, y: -hh}},
+                    {{x: hw, y: -hh}},
+                    {{x: hw, y: hh}},
+                    {{x: -hw, y: hh}}
+                ];
+                
+                // Transform corners to image coordinates
+                const transformedCorners = corners.map(c => {{
+                    const rotX = c.x * cos - c.y * sin;
+                    const rotY = c.x * sin + c.y * cos;
+                    return {{
+                        x: box.cx + rotX,
+                        y: box.cy + rotY
+                    }};
+                }});
+                
+                // Find axis-aligned bounding box
+                const xs = transformedCorners.map(c => c.x);
+                const ys = transformedCorners.map(c => c.y);
+                const xmin = Math.max(0, Math.min(...xs));
+                const ymin = Math.max(0, Math.min(...ys));
+                const xmax = Math.min({img_rgb.width}, Math.max(...xs));
+                const ymax = Math.min({img_rgb.height}, Math.max(...ys));
+                
+                return {{
+                    index: box.index,
+                    label: box.label,
+                    score: box.score,
+                    bbox: [xmin, ymin, xmax, ymax],
+                    obb: {{
+                        cx: box.cx,
+                        cy: box.cy,
+                        width: box.width,
+                        height: box.height,
+                        angle: box.angle
+                    }}
+                }};
+            }});
+            
+            // Send to Streamlit
+            Streamlit.setComponentValue(JSON.stringify(savedBoxes));
+            
+            // Display coordinates to user
+            let coordsText = 'Saved ' + savedBoxes.length + ' box(es):\\n\\n';
+            savedBoxes.forEach((item, idx) => {{
+                const bbox = item.bbox;
+                const obb = item.obb;
+                coordsText += 'Box ' + (idx + 1) + ' (' + item.label + '):\\n';
+                coordsText += '  Axis-Aligned Box:\\n';
+                coordsText += '    xmin: ' + Math.round(bbox[0]) + '\\n';
+                coordsText += '    ymin: ' + Math.round(bbox[1]) + '\\n';
+                coordsText += '    xmax: ' + Math.round(bbox[2]) + '\\n';
+                coordsText += '    ymax: ' + Math.round(bbox[3]) + '\\n';
+                coordsText += '  Oriented Box (OBB):\\n';
+                coordsText += '    center_x: ' + Math.round(obb.cx) + '\\n';
+                coordsText += '    center_y: ' + Math.round(obb.cy) + '\\n';
+                coordsText += '    width: ' + Math.round(obb.width) + '\\n';
+                coordsText += '    height: ' + Math.round(obb.height) + '\\n';
+                coordsText += '    angle: ' + (obb.angle * 180 / Math.PI).toFixed(2) + '° (' + obb.angle.toFixed(4) + ' rad)\\n\\n';
+            }});
+            
+            alert(coordsText);
+            
+            // Show JSON in visible panel for easy copying (NO CONSOLE NEEDED!)
+            const jsonOutputPanel = document.getElementById('jsonOutputPanel');
+            const jsonOutput = document.getElementById('jsonOutput');
+            jsonOutput.value = JSON.stringify(savedBoxes, null, 2);
+            jsonOutputPanel.style.display = 'block';
+            
+            // Scroll to JSON panel so user sees it
+            setTimeout(() => {{
+                jsonOutputPanel.scrollIntoView({{ behavior: 'smooth', block: 'nearest' }});
+            }}, 300);
+            
+            // Also log to console as backup
+            console.log('\\n========================================');
+            console.log('=== OBB EDITOR - JSON OUTPUT ===');
+            console.log('========================================');
+            console.log(JSON.stringify(savedBoxes, null, 2));
+            console.log('========================================\\n');
+            
+            // Visual feedback
+            const saveBtn = event.currentTarget;
+            const originalHTML = saveBtn.innerHTML;
+            saveBtn.innerHTML = '<span>✅</span> Saved!';
+            saveBtn.style.background = '#4CAF50';
+            setTimeout(() => {{
+                saveBtn.innerHTML = originalHTML;
+                saveBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+            }}, 1500);
+        }}
+        
+        // Function to copy JSON to clipboard
+        function copyJsonToClipboard() {{
+            const jsonOutput = document.getElementById('jsonOutput');
+            const copyBtn = document.getElementById('copyBtn');
+            
+            // Select and copy the text
+            jsonOutput.select();
+            jsonOutput.setSelectionRange(0, 99999); // For mobile devices
+            
+            try {{
+                document.execCommand('copy');
+                
+                // Visual feedback
+                const originalHTML = copyBtn.innerHTML;
+                copyBtn.innerHTML = '✅ Copied!';
+                copyBtn.style.background = 'linear-gradient(135deg, #2E7D32 0%, #43A047 100%)';
+                
+                setTimeout(() => {{
+                    copyBtn.innerHTML = originalHTML;
+                    copyBtn.style.background = 'linear-gradient(135deg, #4CAF50 0%, #66BB6A 100%)';
+                }}, 2000);
+            }} catch (err) {{
+                // Fallback for modern browsers
+                navigator.clipboard.writeText(jsonOutput.value).then(() => {{
+                    const originalHTML = copyBtn.innerHTML;
+                    copyBtn.innerHTML = '✅ Copied!';
+                    copyBtn.style.background = 'linear-gradient(135deg, #2E7D32 0%, #43A047 100%)';
+                    
+                    setTimeout(() => {{
+                        copyBtn.innerHTML = originalHTML;
+                        copyBtn.style.background = 'linear-gradient(135deg, #4CAF50 0%, #66BB6A 100%)';
+                    }}, 2000);
+                }}).catch(err => {{
+                    alert('Failed to copy. Please manually select and copy the JSON.');
+                }});
+            }}
+        }}
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {{
+            if (e.key === 'Delete' && selectedBox !== null) {{
+                deleteSelected();
+            }} else if (e.key === 'r' || e.key === 'R') {{
+                setMode(mode === 'draw' ? 'select' : 'draw');
+            }}
+        }});
+    </script>
+    """
+    
+    # Display the component
+    st.components.v1.html(html_code, height=img_rgb.height + 280, scrolling=False)
+    
+    st.info("💡 **New! Easy JSON Copy** - No browser console needed! JSON appears directly in the editor after clicking 'Save Edits'.")
+    
+    # Manual data entry (primary method since automatic capture doesn't work with st.components.v1.html)
+    st.markdown("### 📋 Apply Edited Data")
+    st.markdown("""
+    **Step 1:** Edit boxes in the canvas above (rotate, resize, move as needed)
+    
+    **Step 2:** Click **💾 Save Edits** button in the editor
+    
+    **Step 3:** A **green panel** with JSON will appear below the canvas
+    
+    **Step 4:** Click **📋 Copy to Clipboard** button (or manually select and copy the JSON)
+    
+    **Step 5:** Paste the JSON below and click **✅ Apply Edited Data**
+    """)
+    
+    manual_json = st.text_area(
+        "📥 Paste JSON data here:",
+        placeholder='[{"index": 0, "label": "insulators", "score": 0.79, "bbox": [10, 20, 100, 150], "obb": {"cx": 55, "cy": 85, "width": 90, "height": 130, "angle": -0.2720}}]',
+        height=120,
+        key="manual_obb_json",
+        help="Copy the JSON from browser console and paste here"
+    )
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        if st.button("✅ Apply Edited Data", type="primary", use_container_width=True):
+            if manual_json.strip():
+                try:
+                    import json
+                    edited_data = json.loads(manual_json)
+                    st.session_state.obb_edited_data = edited_data
+                    
+                    # Show what was captured
+                    rotated_count = sum(1 for box in edited_data if box['obb']['angle'] != 0)
+                    st.success(f"✅ Applied {len(edited_data)} box(es)!")
+                    if rotated_count > 0:
+                        st.info(f"🔄 {rotated_count} box(es) have rotation angles")
+                    st.rerun()
+                except json.JSONDecodeError as e:
+                    st.error(f"❌ Invalid JSON format: {e}")
+            else:
+                st.warning("⚠️ Please paste JSON data first")
+    
+    with col2:
+        st.caption("💡 If you don't see JSON in console, make sure you clicked 'Save Edits' in the canvas first!")
+
+def display_coco_editor(img_rgb, boxes, labels, scores, indices):
+    """Simple COCO Editor - Just load image and show boxes"""
+    import base64
+    import json
+    from io import BytesIO
+    
+    buffered = BytesIO()
+    img_rgb.save(buffered, format="PNG")
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
+    
+    boxes_json = json.dumps([
+        {'x1': float(box[0]), 'y1': float(box[1]), 'x2': float(box[2]), 'y2': float(box[3]),
+         'label': label, 'score': float(score), 'index': int(idx)}
+        for box, label, score, idx in zip(boxes, labels, scores, indices)
+    ])
+    
+    html_code = f"""
+    <style>
+        body {{ margin: 0; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); font-family: Arial, sans-serif; }}
+        .toolbar {{ background: rgba(255,255,255,0.95); padding: 15px; border-radius: 8px; margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap; }}
+        .btn {{ padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 14px; transition: all 0.3s; }}
+        .btn:hover {{ transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }}
+        .btn-draw {{ background: #4CAF50; color: white; }}
+        .btn-select {{ background: #2196F3; color: white; }}
+        .btn-delete {{ background: #FF9800; color: white; }}
+        .btn-clear {{ background: #f44336; color: white; }}
+        .btn-save {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }}
+        .active {{ box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.5); }}
+        .wrapper {{ background: white; padding: 15px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }}
+        #c {{ display: block; cursor: crosshair; max-width: 100%; height: auto; }}
+        .info {{ background: rgba(255,255,255,0.95); padding: 10px; border-radius: 8px; margin-top: 15px; }}
+    </style>
+    
+    <div class="toolbar">
+        <button class="btn btn-draw active" id="drawBtn" onclick="setMode('draw')">✏️ Draw Box</button>
+        <button class="btn btn-select" id="selectBtn" onclick="setMode('select')">👆 Select/Edit</button>
+        <button class="btn btn-delete" onclick="deleteSelected()">🗑️ Delete</button>
+        <button class="btn btn-clear" onclick="clearAll()">🧹 Clear All</button>
+        <button class="btn btn-save" onclick="saveBoxes()">💾 Save Edits</button>
+        <div style="flex: 1;"></div>
+        <select class="btn" id="labelSelect" style="background: white; border: 2px solid #ddd;">
+            <option value="insulators">Insulators</option>
+            <option value="crossarm">Crossarm</option>
+            <option value="utility-pole">Utility-Pole</option>
+        </select>
+    </div>
+    
+    <div class="wrapper">
+        <canvas id="c" width="{img_rgb.width}" height="{img_rgb.height}"></canvas>
+    </div>
+    
+    <div class="info">
+        <strong>Mode:</strong> <span id="mode">Draw</span> | 
+        <strong>Boxes:</strong> <span id="boxCount">0</span> | 
+        <strong>Selected:</strong> <span id="selected">None</span>
+    </div>
+    
+    <script>
+    var c = document.getElementById('c');
+    var ctx = c.getContext('2d');
+    var img = new Image();
+    var boxes = {boxes_json};
+    var mode = 'draw';
+    var selectedBox = -1;
+    
+    var boxes = {boxes_json};
+    var mode = 'draw';
+    var selectedBox = -1;
+    
+    img.onload = function() {{ 
+        c.width = img.width;
+        c.height = img.height;
+        render(); 
+    }};
+    img.src = 'data:image/png;base64,{img_base64}';
+    
+    function render() {{
+        ctx.clearRect(0, 0, c.width, c.height);
+        ctx.drawImage(img, 0, 0);
+        
+        // Draw boxes
+        boxes.forEach((box, idx) => {{
+            ctx.strokeStyle = idx === selectedBox ? '#00FF00' : '#FF0000';
+            ctx.lineWidth = idx === selectedBox ? 6 : 4;
+            ctx.strokeRect(box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1);
+            
+            ctx.fillStyle = idx === selectedBox ? '#00FF00' : '#FF0000';
+            ctx.font = 'bold 16px Arial';
+            ctx.fillText(box.label + ' ' + box.score.toFixed(2), box.x1, Math.max(20, box.y1 - 5));
+        }});
+        
+        document.getElementById('boxCount').textContent = boxes.length;
+        document.getElementById('selected').textContent = selectedBox >= 0 ? 'Box ' + (selectedBox + 1) : 'None';
+    }}
+    
+    function setMode(newMode) {{
+        mode = newMode;
+        selectedBox = -1;
+        document.getElementById('drawBtn').classList.toggle('active', newMode === 'draw');
+        document.getElementById('selectBtn').classList.toggle('active', newMode === 'select');
+        document.getElementById('mode').textContent = newMode === 'draw' ? 'Draw' : 'Select/Edit';
+        c.style.cursor = newMode === 'draw' ? 'crosshair' : 'pointer';
+        render();
+    }}
+    
+    function deleteSelected() {{
+        if (selectedBox >= 0) {{
+            boxes.splice(selectedBox, 1);
+            selectedBox = -1;
+            render();
+        }}
+    }}
+    
+    function clearAll() {{
+        if (confirm('Clear all boxes?')) {{
+            boxes = [];
+            selectedBox = -1;
+            render();
+        }}
+    }}
+    
+    function setModeOLD(newMode) {{
+        mode = newMode;
+        selectedBox = -1;
+        document.getElementById('drawBtn').classList.toggle('active', newMode === 'draw');
+        document.getElementById('selectBtn').classList.toggle('active', newMode === 'select');
+        document.getElementById('mode').textContent = newMode === 'draw' ? 'Draw' : 'Select/Edit';
+        c.style.cursor = newMode === 'draw' ? 'crosshair' : 'pointer';
+        render();
+    }}
+    
+    function deleteSelected() {{
+        if (selectedBox >= 0) {{
+            boxes.splice(selectedBox, 1);
+            selectedBox = -1;
+            render();
+        }}
+    }}
+    
+    function clearAll() {{
+        if (confirm('Clear all boxes?')) {{
+            boxes = [];
+            selectedBox = -1;
+            render();
+        }}
+    }}
+    
+    function saveBoxes() {{
+        if (boxes.length === 0) {{
+            alert('No boxes to save!');
+            return;
+        }}
+        
+        // Format box coordinates
+        let coordsText = 'Saved ' + boxes.length + ' box(es):\\n\\n';
+        boxes.forEach((box, idx) => {{
+            coordsText += 'Box ' + (idx + 1) + ' (' + box.label + '):\\n';
+            coordsText += '  xmin: ' + Math.round(box.x1) + '\\n';
+            coordsText += '  ymin: ' + Math.round(box.y1) + '\\n';
+            coordsText += '  xmax: ' + Math.round(box.x2) + '\\n';
+            coordsText += '  ymax: ' + Math.round(box.y2) + '\\n';
+            coordsText += '  width: ' + Math.round(box.x2 - box.x1) + '\\n';
+            coordsText += '  height: ' + Math.round(box.y2 - box.y1) + '\\n\\n';
+        }});
+        
+        alert(coordsText);
+        
+        // Also log to console for copy-paste
+        console.log('=== BOUNDING BOX COORDINATES ===');
+        boxes.forEach((box, idx) => {{
+            console.log('Box ' + (idx + 1) + ' (' + box.label + '):', {{
+                xmin: Math.round(box.x1),
+                ymin: Math.round(box.y1),
+                xmax: Math.round(box.x2),
+                ymax: Math.round(box.y2),
+                width: Math.round(box.x2 - box.x1),
+                height: Math.round(box.y2 - box.y1),
+                label: box.label,
+                score: box.score
+            }});
+        }});
+        console.log('=== JSON FORMAT ===');
+        console.log(JSON.stringify(boxes, null, 2));
+    }}
+    
+    // Mouse event handlers
+    let isDrawing = false;
+    let startX, startY;
+    let currentBox = null;
+    
+    c.addEventListener('mousedown', (e) => {{
+        const rect = c.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        if (mode === 'draw') {{
+            isDrawing = true;
+            startX = x;
+            startY = y;
+            currentBox = {{x1: x, y1: y, x2: x, y2: y}};
+        }} else {{
+            // Select mode - check if clicking on a box
+            selectedBox = -1;
+            for (let i = boxes.length - 1; i >= 0; i--) {{
+                const box = boxes[i];
+                if (x >= box.x1 && x <= box.x2 && y >= box.y1 && y <= box.y2) {{
+                    selectedBox = i;
+                    break;
+                }}
+            }}
+            render();
+        }}
+    }});
+    
+    c.addEventListener('mousemove', (e) => {{
+        if (mode === 'draw' && isDrawing) {{
+            const rect = c.getBoundingClientRect();
+            currentBox.x2 = e.clientX - rect.left;
+            currentBox.y2 = e.clientY - rect.top;
+            
+            // Render with current box preview
+            ctx.clearRect(0, 0, c.width, c.height);
+            ctx.drawImage(img, 0, 0);
+            
+            // Draw existing boxes
+            boxes.forEach((box, idx) => {{
+                ctx.strokeStyle = '#FF0000';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1);
+                ctx.fillStyle = '#FF0000';
+                ctx.font = 'bold 16px Arial';
+                ctx.fillText(box.label + ' ' + box.score.toFixed(2), box.x1, Math.max(20, box.y1 - 5));
+            }});
+            
+            // Draw current box being drawn
+            ctx.strokeStyle = '#00FF00';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([5, 5]);
+            ctx.strokeRect(currentBox.x1, currentBox.y1, currentBox.x2 - currentBox.x1, currentBox.y2 - currentBox.y1);
+            ctx.setLineDash([]);
+        }}
+    }});
+    
+    c.addEventListener('mouseup', (e) => {{
+        if (mode === 'draw' && isDrawing) {{
+            isDrawing = false;
+            if (currentBox && Math.abs(currentBox.x2 - currentBox.x1) > 10 && Math.abs(currentBox.y2 - currentBox.y1) > 10) {{
+                const selectedLabel = document.getElementById('labelSelect').value;
+                boxes.push({{
+                    x1: Math.min(currentBox.x1, currentBox.x2),
+                    y1: Math.min(currentBox.y1, currentBox.y2),
+                    x2: Math.max(currentBox.x1, currentBox.x2),
+                    y2: Math.max(currentBox.y1, currentBox.y2),
+                    label: selectedLabel,
+                    score: 1.0,
+                    index: -1
+                }});
+            }}
+            currentBox = null;
+            render();
+        }}
+    }});
+    </script>
+    """
+    
+    # Calculate proper height
+    max_display_width = 1200
+    aspect_ratio = img_rgb.height / img_rgb.width
+    display_height = min(img_rgb.height, int(max_display_width * aspect_ratio))
+    
+    st.components.v1.html(html_code, height=display_height + 220)
+
+
+def display_coco_editor_FULL_OLD(img_rgb, boxes, labels, scores, indices):
+    """OLD VERSION"""
+    import base64
+    import json
+    from io import BytesIO
+    
+    buffered = BytesIO()
+    img_rgb.save(buffered, format="PNG")
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
+    
+    boxes_json = json.dumps([
+        {'x1': float(box[0]), 'y1': float(box[1]), 'x2': float(box[2]), 'y2': float(box[3]),
+         'label': label, 'score': float(score), 'index': int(idx)}
+        for box, label, score, idx in zip(boxes, labels, scores, indices)
+    ])
+    
+    html_code_old = f"""
+    <style>
+        .editor-container {{
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 100%;
+            margin: 0 auto;
+        }}
+        
+        .toolbar {{
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            flex-wrap: wrap;
+            align-items: center;
+        }}
+        
+        .tool-btn {{
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }}
+        
+        .tool-btn:hover {{
+            background: rgba(255,255,255,0.3);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.25);
+        }}
+        
+        .tool-btn.active {{
+            background: white;
+            color: #667eea;
+        }}
+        
+        .tool-btn.danger {{
+            background: rgba(244,67,54,0.8);
+        }}
+        
+        .canvas-wrapper {{
+            position: relative;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+        }}
+        
+        #cocoCanvas {{
+            display: block;
+            cursor: crosshair;
+        }}
+        
+        .info-panel {{
+            margin-top: 15px;
+            padding: 15px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: 12px;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }}
+        
+        .info-item {{
+            flex: 1;
+            min-width: 120px;
+        }}
+        
+        .info-label {{
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        
+        .info-value {{
+            font-size: 16px;
+            font-weight: 700;
+            color: #333;
+        }}
+        
+        .label-input {{
+            padding: 8px 12px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+            font-weight: 600;
+            cursor: pointer;
+        }}
+        
+        .instructions {{
+            background: #f0f4ff;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #555;
+            border-left: 4px solid #667eea;
+            margin-top: 10px;
+        }}
+    </style>
+    
+    <div class="editor-container">
+        <!-- Toolbar -->
+        <div class="toolbar">
+            <button class="tool-btn active" id="drawBtn" onclick="setMode('draw')">
+                <span>✏️</span> Draw Box
+            </button>
+            <button class="tool-btn" id="selectBtn" onclick="setMode('select')">
+                <span>👆</span> Select/Edit
+            </button>
+            <button class="tool-btn danger" onclick="deleteSelected()">
+                <span>🗑️</span> Delete
+            </button>
+            <button class="tool-btn danger" onclick="clearAll()">
+                <span>🧹</span> Clear All
+            </button>
+            <button class="tool-btn" onclick="saveBoxes()" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);">
+                <span>💾</span> Save Edits
+            </button>
+            
+            <div style="flex: 1;"></div>
+            
+            <select class="label-input" id="labelSelect">
+                <option value="insulators">Insulators</option>
+                <option value="crossarm">Crossarm</option>
+                <option value="utility-pole">Utility-Pole</option>
+            </select>
+        </div>
+        
+        <!-- Canvas -->
+        <div class="canvas-wrapper">
+            <canvas id="cocoCanvas" width="{img_rgb.width}" height="{img_rgb.height}"></canvas>
+        </div>
+        
+        <!-- Info Panel -->
+        <div class="info-panel">
+            <div class="info-item">
+                <div class="info-label">Mode</div>
+                <div class="info-value" id="modeDisplay">Draw</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Total Boxes</div>
+                <div class="info-value" id="boxCount">0</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Selected</div>
+                <div class="info-value" id="selectedInfo">None</div>
+            </div>
+        </div>
+        
+        <!-- Instructions -->
+        <div class="instructions">
+            <strong>💡 How to Edit Boxes:</strong><br>
+            <strong>Draw:</strong> Click "✏️ Draw Box" and drag on image<br>
+            <strong>✋ Move:</strong> Select mode → Click and drag box<br>
+            <strong>🔲 Resize:</strong> Select mode → Drag corners or edges<br>
+            <strong>Delete:</strong> Press Delete key or use Delete button
+        </div>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('cocoCanvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        img.src = 'data:image/png;base64,{img_base64}';
+        
+        let boxes = {boxes_json};
+        let mode = 'draw';
+        let selectedBox = -1;
+        let isDragging = false;
+        let dragType = null;
+        let startX, startY;
+        let currentBox = null;
+        
+        img.onload = () => {{
+            render();
+            updateInfo();
+        }};
+        
+        function render() {{
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+            
+            // Draw all boxes
+            boxes.forEach((box, idx) => {{
+                const isSelected = idx === selectedBox;
+                ctx.strokeStyle = isSelected ? '#00FF00' : '#FF0000';
+                ctx.lineWidth = isSelected ? 6 : 4;
+                ctx.strokeRect(box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1);
+                
+                // Draw label
+                ctx.fillStyle = isSelected ? '#00FF00' : '#FF0000';
+                ctx.font = 'bold 16px Arial';
+                const labelText = box.label + ' ' + box.score.toFixed(2);
+                ctx.fillText(labelText, box.x1, Math.max(20, box.y1 - 5));
+                
+                // Draw resize handles if selected
+                if (isSelected) {{
+                    const handleSize = 12;
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.strokeStyle = '#00FF00';
+                    ctx.lineWidth = 2;
+                    
+                    // Corner handles
+                    const corners = [
+                        {{x: box.x1, y: box.y1}},
+                        {{x: box.x2, y: box.y1}},
+                        {{x: box.x1, y: box.y2}},
+                        {{x: box.x2, y: box.y2}}
+                    ];
+                    corners.forEach(c => {{
+                        ctx.fillRect(c.x - handleSize/2, c.y - handleSize/2, handleSize, handleSize);
+                        ctx.strokeRect(c.x - handleSize/2, c.y - handleSize/2, handleSize, handleSize);
+                    }});
+                    
+                    // Edge handles
+                    const edges = [
+                        {{x: (box.x1 + box.x2) / 2, y: box.y1}},
+                        {{x: (box.x1 + box.x2) / 2, y: box.y2}},
+                        {{x: box.x1, y: (box.y1 + box.y2) / 2}},
+                        {{x: box.x2, y: (box.y1 + box.y2) / 2}}
+                    ];
+                    edges.forEach(e => {{
+                        ctx.fillRect(e.x - handleSize/2, e.y - handleSize/2, handleSize, handleSize);
+                        ctx.strokeRect(e.x - handleSize/2, e.y - handleSize/2, handleSize, handleSize);
+                    }});
+                }}
+            }});
+            
+            // Draw current box being drawn
+            if (currentBox && mode === 'draw') {{
+                ctx.strokeStyle = '#0000FF';
+                ctx.lineWidth = 3;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(currentBox.x1, currentBox.y1, currentBox.x2 - currentBox.x1, currentBox.y2 - currentBox.y1);
+                ctx.setLineDash([]);
+            }}
+            
+            updateInfo();
+        }}
+        
+        function setMode(newMode) {{
+            mode = newMode;
+            selectedBox = -1;
+            document.getElementById('modeDisplay').textContent = newMode === 'draw' ? 'Draw' : 'Select/Edit';
+            
+            const drawBtn = document.getElementById('drawBtn');
+            const selectBtn = document.getElementById('selectBtn');
+            
+            // Update button styles
+            if (newMode === 'draw') {{
+                drawBtn.classList.add('active');
+                selectBtn.classList.remove('active');
+                canvas.style.cursor = 'crosshair';
+            }} else {{
+                drawBtn.classList.remove('active');
+                selectBtn.classList.add('active');
+                canvas.style.cursor = 'default';
+            }}
+            
+            render();
+        }}
+        
+        function getMousePos(e) {{
+            const rect = canvas.getBoundingClientRect();
+            return {{
+                x: (e.clientX - rect.left) * (canvas.width / rect.width),
+                y: (e.clientY - rect.top) * (canvas.height / rect.height)
+            }};
+        }}
+        
+        function getHandle(pos, box) {{
+            const handleSize = 12;
+            const threshold = handleSize;
+            
+            // Check corners
+            if (Math.abs(pos.x - box.x1) < threshold && Math.abs(pos.y - box.y1) < threshold) return 'resize-nw';
+            if (Math.abs(pos.x - box.x2) < threshold && Math.abs(pos.y - box.y1) < threshold) return 'resize-ne';
+            if (Math.abs(pos.x - box.x1) < threshold && Math.abs(pos.y - box.y2) < threshold) return 'resize-sw';
+            if (Math.abs(pos.x - box.x2) < threshold && Math.abs(pos.y - box.y2) < threshold) return 'resize-se';
+            
+            // Check edges
+            const midX = (box.x1 + box.x2) / 2;
+            const midY = (box.y1 + box.y2) / 2;
+            if (Math.abs(pos.x - midX) < threshold && Math.abs(pos.y - box.y1) < threshold) return 'resize-n';
+            if (Math.abs(pos.x - midX) < threshold && Math.abs(pos.y - box.y2) < threshold) return 'resize-s';
+            if (Math.abs(pos.x - box.x1) < threshold && Math.abs(pos.y - midY) < threshold) return 'resize-w';
+            if (Math.abs(pos.x - box.x2) < threshold && Math.abs(pos.y - midY) < threshold) return 'resize-e';
+            
+            // Check if inside box (for moving)
+            if (pos.x >= box.x1 && pos.x <= box.x2 && pos.y >= box.y1 && pos.y <= box.y2) return 'move';
+            
+            return null;
+        }}
+        
+        canvas.addEventListener('mousedown', (e) => {{
+            const pos = getMousePos(e);
+            
+            if (mode === 'draw') {{
+                isDragging = true;
+                startX = pos.x;
+                startY = pos.y;
+                currentBox = {{x1: pos.x, y1: pos.y, x2: pos.x, y2: pos.y}};
+            }} else if (mode === 'select') {{
+                // Check if clicking on a box
+                for (let i = boxes.length - 1; i >= 0; i--) {{
+                    const handle = getHandle(pos, boxes[i]);
+                    if (handle) {{
+                        selectedBox = i;
+                        isDragging = true;
+                        dragType = handle;
+                        startX = pos.x;
+                        startY = pos.y;
+                        render();
+                        return;
+                    }}
+                }}
+                selectedBox = -1;
+                render();
+            }}
+        }});
+        
+        canvas.addEventListener('mousemove', (e) => {{
+            const pos = getMousePos(e);
+            
+            if (!isDragging) {{
+                // Update cursor based on hover
+                if (mode === 'select' && selectedBox >= 0) {{
+                    const handle = getHandle(pos, boxes[selectedBox]);
+                    if (handle) {{
+                        if (handle === 'move') canvas.style.cursor = 'move';
+                        else if (handle.includes('nw') || handle.includes('se')) canvas.style.cursor = 'nwse-resize';
+                        else if (handle.includes('ne') || handle.includes('sw')) canvas.style.cursor = 'nesw-resize';
+                        else if (handle.includes('n') || handle.includes('s')) canvas.style.cursor = 'ns-resize';
+                        else if (handle.includes('e') || handle.includes('w')) canvas.style.cursor = 'ew-resize';
+                    }} else {{
+                        canvas.style.cursor = 'default';
+                    }}
+                }}
+                return;
+            }}
+            
+            if (mode === 'draw') {{
+                currentBox.x2 = pos.x;
+                currentBox.y2 = pos.y;
+                render();
+            }} else if (mode === 'select' && selectedBox >= 0) {{
+                const box = boxes[selectedBox];
+                const dx = pos.x - startX;
+                const dy = pos.y - startY;
+                
+                if (dragType === 'move') {{
+                    box.x1 += dx;
+                    box.y1 += dy;
+                    box.x2 += dx;
+                    box.y2 += dy;
+                }} else if (dragType === 'resize-nw') {{
+                    box.x1 = pos.x;
+                    box.y1 = pos.y;
+                }} else if (dragType === 'resize-ne') {{
+                    box.x2 = pos.x;
+                    box.y1 = pos.y;
+                }} else if (dragType === 'resize-sw') {{
+                    box.x1 = pos.x;
+                    box.y2 = pos.y;
+                }} else if (dragType === 'resize-se') {{
+                    box.x2 = pos.x;
+                    box.y2 = pos.y;
+                }} else if (dragType === 'resize-n') {{
+                    box.y1 = pos.y;
+                }} else if (dragType === 'resize-s') {{
+                    box.y2 = pos.y;
+                }} else if (dragType === 'resize-w') {{
+                    box.x1 = pos.x;
+                }} else if (dragType === 'resize-e') {{
+                    box.x2 = pos.x;
+                }}
+                
+                // Ensure x1 < x2 and y1 < y2
+                if (box.x1 > box.x2) [box.x1, box.x2] = [box.x2, box.x1];
+                if (box.y1 > box.y2) [box.y1, box.y2] = [box.y2, box.y1];
+                
+                startX = pos.x;
+                startY = pos.y;
+                render();
+            }}
+        }});
+        
+        canvas.addEventListener('mouseup', (e) => {{
+            if (mode === 'draw' && isDragging && currentBox) {{
+                const width = Math.abs(currentBox.x2 - currentBox.x1);
+                const height = Math.abs(currentBox.y2 - currentBox.y1);
+                
+                if (width > 10 && height > 10) {{
+                    boxes.push({{
+                        x1: Math.min(currentBox.x1, currentBox.x2),
+                        y1: Math.min(currentBox.y1, currentBox.y2),
+                        x2: Math.max(currentBox.x1, currentBox.x2),
+                        y2: Math.max(currentBox.y1, currentBox.y2),
+                        label: document.getElementById('labelSelect').value,
+                        score: 1.0,
+                        index: boxes.length > 0 ? Math.max(...boxes.map(b => b.index)) + 1 : 0
+                    }});
+                }}
+                currentBox = null;
+            }}
+            
+            isDragging = false;
+            dragType = null;
+            render();
+        }});
+        
+        function deleteSelected() {{
+            if (selectedBox >= 0) {{
+                boxes.splice(selectedBox, 1);
+                selectedBox = -1;
+                render();
+            }}
+        }}
+        
+        function clearAll() {{
+            if (confirm('Clear all boxes?')) {{
+                boxes = [];
+                selectedBox = -1;
+                render();
+            }}
+        }}
+        
+        function saveBoxes() {{
+            // Confirmation dialog
+            const message = boxes.length === 0 
+                ? 'No boxes to save. Do you want to clear all detections?'
+                : 'Save ' + boxes.length + ' axis-aligned box(es) and update feedback?\\n\\nThis will overwrite the current detections.';
+            
+            if (!confirm(message)) {{
+                return; // User cancelled
+            }}
+            
+            const savedBoxes = boxes.map(box => ({{
+                index: box.index,
+                label: box.label,
+                score: box.score,
+                bbox: [
+                    Math.max(0, Math.min(box.x1, box.x2)),
+                    Math.max(0, Math.min(box.y1, box.y2)),
+                    Math.min({img_rgb.width}, Math.max(box.x1, box.x2)),
+                    Math.min({img_rgb.height}, Math.max(box.y1, box.y2))
+                ]
+            }})));
+            
+            // Send to Streamlit
+            Streamlit.setComponentValue(JSON.stringify(savedBoxes));
+            
+            // Visual feedback
+            const saveBtn = event.currentTarget;
+            const originalHTML = saveBtn.innerHTML;
+            saveBtn.innerHTML = '✅ Saved!';
+            saveBtn.style.background = '#4CAF50';
+            setTimeout(() => {{
+                saveBtn.innerHTML = originalHTML;
+                saveBtn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+            }}, 1500);
+        }}
+        
+        function updateInfo() {{
+            document.getElementById('boxCount').textContent = boxes.length;
+            if (selectedBox >= 0 && selectedBox < boxes.length) {{
+                const box = boxes[selectedBox];
+                document.getElementById('selectedInfo').textContent = 'Box ' + (selectedBox + 1) + ' (' + box.label + ')';
+            }} else {{
+                document.getElementById('selectedInfo').textContent = 'None';
+            }}
+        }}
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {{
+            if (e.key === 'Delete' && selectedBox >= 0) {{
+                deleteSelected();
+            }} else if (e.key === 'd' || e.key === 'D') {{
+                setMode('draw');
+            }} else if (e.key === 's' || e.key === 'S') {{
+                setMode('select');
+            }}
+        }});
+        
+        // Initialize
+        setMode('draw');
+    </script>
+    """
+    
+    st.markdown("### 📐 COCO Editor (Axis-Aligned Boxes)")
+    st.components.v1.html(html_code, height=min(img_rgb.height + 280, 900))
+
+
+def display_html5_canvas_editor(img_rgb, boxes, labels, scores, indices):
+    """
+    HTML5 Canvas implementation with mouse drawing - NO external dependencies!
+    Provides full interactive editing: draw, move, resize boxes with mouse
+    """
+    import base64
+    import json
+    from io import BytesIO
+    
+    # Convert image to base64
+    buffered = BytesIO()
+    img_rgb.save(buffered, format="PNG")
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
+    
+    # Prepare existing boxes as JSON with indices for feedback tracking
+    boxes_json = json.dumps([
+        {
+            'x1': float(box[0]), 'y1': float(box[1]), 
+            'x2': float(box[2]), 'y2': float(box[3]),
+            'label': label, 'score': float(score), 'index': int(idx)
+        }
+        for box, label, score, idx in zip(boxes, labels, scores, indices)
+    ])
+    
+    # Initialize session state for canvas edits
+    canvas_key = f"canvas_edits_{hash(img_base64[:100])}"
+    if canvas_key not in st.session_state:
+        st.session_state[canvas_key] = {'boxes': boxes_json}
+    
+    # HTML/CSS/JavaScript for interactive canvas
+    html_code = f"""
+    <div style="border: 2px solid #ddd; border-radius: 8px; padding: 15px; background: #f9f9f9; margin-bottom: 20px;">
+        <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
+            <button onclick="setMode('draw')" id="drawBtn" 
+                    style="padding: 10px 20px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 6px; font-weight: bold;">
+                🖊️ Draw Box
+            </button>
+            <button onclick="setMode('move')" id="moveBtn" 
+                    style="padding: 10px 20px; cursor: pointer; background: #2196F3; color: white; border: none; border-radius: 6px; font-weight: bold;">
+                ✋ Move/Resize
+            </button>
+            <button onclick="deleteSelected()" id="deleteBtn"
+                    style="padding: 10px 20px; cursor: pointer; background: #FF9800; color: white; border: none; border-radius: 6px; font-weight: bold;">
+                ❌ Delete Selected
+            </button>
+            <button onclick="clearAll()" 
+                    style="padding: 10px 20px; cursor: pointer; background: #f44336; color: white; border: none; border-radius: 6px; font-weight: bold;">
+                🗑️ Clear All
+            </button>
+            <button onclick="saveBoxes()" 
+                    style="padding: 10px 20px; cursor: pointer; background: #9C27B0; color: white; border: none; border-radius: 6px; font-weight: bold;">
+                💾 Save Changes
+            </button>
+        </div>
+        
+        <canvas id="myCanvas" width="{img_rgb.width}" height="{img_rgb.height}" 
+                style="border: 2px solid #ccc; cursor: crosshair; background: white; display: block; max-width: 100%; height: auto; box-shadow: 0 2px 8px rgba(0,0,0,0.1);"></canvas>
+        
+        <div id="info" style="margin-top: 15px; padding: 12px; background: white; border-radius: 6px; font-family: 'Segoe UI', sans-serif; font-size: 14px; border-left: 4px solid #2196F3;">
+            <strong>Mode: Draw</strong> | Click and drag to create boxes | Press <kbd>Delete</kbd> to remove selected box
+        </div>
+        
+        <div id="boxInfo" style="margin-top: 10px; padding: 10px; background: #e3f2fd; border-radius: 4px; font-size: 12px; display: none;">
+            <strong>Selected:</strong> <span id="selectedLabel"></span>
+        </div>
+    </div>
+    
+    <script>
+        const canvas = document.getElementById('myCanvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        img.src = 'data:image/png;base64,{img_base64}';
+        
+        let boxes = {boxes_json};
+        let mode = 'draw';
+        let isDrawing = false;
+        let startX, startY;
+        let currentBox = null;
+        let selectedBox = null;
+        let isResizing = false;
+        let resizeHandle = null;
+        
+        const boxColor = '#00FF00';  // Green color for all boxes
+        
+        img.onload = function() {{
+            redraw();
+        }};
+        
+        function redraw() {{
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+            
+            // Draw all boxes in green with solid lines (thicker)
+            boxes.forEach((box, idx) => {{
+                ctx.strokeStyle = boxColor;
+                ctx.lineWidth = 5;  // Increased thickness
+                ctx.setLineDash([]);  // Ensure solid lines
+                ctx.strokeRect(box.x1, box.y1, box.x2 - box.x1, box.y2 - box.y1);
+                
+                // Draw label background
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.fillRect(box.x1, Math.max(0, box.y1 - 20), 150, 18);
+                
+                // Draw label text
+                ctx.fillStyle = boxColor;
+                ctx.font = 'bold 14px Arial';
+                ctx.fillText(`${{box.label}}: ${{box.score.toFixed(2)}}`, box.x1 + 2, Math.max(15, box.y1 - 5));
+                
+                // Draw handles if selected
+                if (selectedBox === idx) {{
+                    drawHandles(box);
+                }}
+            }});
+            
+            // Draw current box being drawn
+            if (currentBox) {{
+                ctx.strokeStyle = '#FF0000';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.strokeRect(currentBox.x1, currentBox.y1, 
+                              currentBox.x2 - currentBox.x1, 
+                              currentBox.y2 - currentBox.y1);
+                ctx.setLineDash([]);
+            }}
+        }}
+        
+        function drawHandles(box) {{
+            ctx.fillStyle = '#FF0000';
+            ctx.strokeStyle = '#FFFFFF';
+            const handleSize = 10;
+            const handles = [
+                {{x: box.x1, y: box.y1, type: 'nw'}},
+                {{x: box.x2, y: box.y1, type: 'ne'}},
+                {{x: box.x1, y: box.y2, type: 'sw'}},
+                {{x: box.x2, y: box.y2, type: 'se'}}
+            ];
+            handles.forEach(h => {{
+                ctx.beginPath();
+                ctx.arc(h.x, h.y, handleSize/2, 0, 2 * Math.PI);
+                ctx.fill();
+                ctx.stroke();
+            }});
+        }}
+        
+        function getHandleAt(x, y, box) {{
+            const handleSize = 10;
+            const handles = [
+                {{x: box.x1, y: box.y1, type: 'nw'}},
+                {{x: box.x2, y: box.y1, type: 'ne'}},
+                {{x: box.x1, y: box.y2, type: 'sw'}},
+                {{x: box.x2, y: box.y2, type: 'se'}}
+            ];
+            for (let h of handles) {{
+                if (Math.abs(x - h.x) < handleSize && Math.abs(y - h.y) < handleSize) {{
+                    return h.type;
+                }}
+            }}
+            return null;
+        }}
+        
+        function setMode(newMode) {{
+            mode = newMode;
+            selectedBox = null;
+            canvas.style.cursor = mode === 'draw' ? 'crosshair' : 'pointer';
+            document.getElementById('info').innerHTML = 
+                mode === 'draw' ? 
+                '<strong>Mode: Draw</strong> | Click and drag to create boxes | Press <kbd>Delete</kbd> to remove selected box' : 
+                '<strong>Mode: Move/Resize</strong> | Click boxes to select, drag to move, drag corners to resize';
+            document.getElementById('boxInfo').style.display = 'none';
+            redraw();
+        }}
+        
+        function clearAll() {{
+            if (confirm('Clear all boxes? This cannot be undone.')) {{
+                boxes = [];
+                selectedBox = null;
+                redraw();
+            }}
+        }}
+        
+        function deleteSelected() {{
+            if (selectedBox !== null) {{
+                boxes.splice(selectedBox, 1);
+                selectedBox = null;
+                document.getElementById('boxInfo').style.display = 'none';
+                redraw();
+            }} else {{
+                alert('Please select a box first');
+            }}
+        }}
+        
+        function saveBoxes() {{
+            // Store boxes in a way Streamlit can access
+            // This will be handled via Streamlit's component communication
+            const boxesJson = JSON.stringify(boxes);
+            // Use parent.postMessage to send data to Streamlit
+            if (window.parent) {{
+                window.parent.postMessage({{
+                    type: 'canvas_boxes',
+                    boxes: boxesJson
+                }}, '*');
+            }}
+            alert(`Saved ${{boxes.length}} box(es)!`);
+        }}
+        
+        canvas.addEventListener('mousedown', (e) => {{
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            if (mode === 'draw') {{
+                isDrawing = true;
+                startX = x;
+                startY = y;
+                currentBox = {{x1: x, y1: y, x2: x, y2: y}};
+            }} else {{
+                // Check if clicking on a resize handle first
+                if (selectedBox !== null) {{
+                    const box = boxes[selectedBox];
+                    const handle = getHandleAt(x, y, box);
+                    if (handle) {{
+                        isResizing = true;
+                        resizeHandle = handle;
+                        startX = x;
+                        startY = y;
+                        return;
+                    }}
+                }}
+                
+                // Check if clicking on a box
+                for (let i = boxes.length - 1; i >= 0; i--) {{
+                    const box = boxes[i];
+                    if (x >= box.x1 && x <= box.x2 && y >= box.y1 && y <= box.y2) {{
+                        selectedBox = i;
+                        startX = x;
+                        startY = y;
+                        document.getElementById('boxInfo').style.display = 'block';
+                        document.getElementById('selectedLabel').textContent = 
+                            `${{box.label}} (conf: ${{box.score.toFixed(2)}})`;
+                        redraw();
+                        return;
+                    }}
+                }}
+                selectedBox = null;
+                document.getElementById('boxInfo').style.display = 'none';
+                redraw();
+            }}
+        }});
+        
+        canvas.addEventListener('mousemove', (e) => {{
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            if (mode === 'draw' && isDrawing) {{
+                currentBox.x2 = x;
+                currentBox.y2 = y;
+                redraw();
+            }} else if (mode === 'move' && selectedBox !== null) {{
+                const box = boxes[selectedBox];
+                
+                if (isResizing && resizeHandle) {{
+                    // Resize box
+                    if (resizeHandle.includes('n')) box.y1 = y;
+                    if (resizeHandle.includes('s')) box.y2 = y;
+                    if (resizeHandle.includes('w')) box.x1 = x;
+                    if (resizeHandle.includes('e')) box.x2 = x;
+                    
+                    // Ensure valid box
+                    if (box.x2 < box.x1) {{ const temp = box.x1; box.x1 = box.x2; box.x2 = temp; }}
+                    if (box.y2 < box.y1) {{ const temp = box.y1; box.y1 = box.y2; box.y2 = temp; }}
+                }} else if (e.buttons === 1) {{
+                    // Move box
+                    const dx = x - startX;
+                    const dy = y - startY;
+                    box.x1 += dx;
+                    box.y1 += dy;
+                    box.x2 += dx;
+                    box.y2 += dy;
+                    startX = x;
+                    startY = y;
+                }}
+                
+                // Update cursor
+                const handle = getHandleAt(x, y, box);
+                canvas.style.cursor = handle ? 'nwse-resize' : 'move';
+                
+                redraw();
+            }}
+        }});
+        
+        canvas.addEventListener('mouseup', (e) => {{
+            if (mode === 'draw' && isDrawing) {{
+                isDrawing = false;
+                if (currentBox && Math.abs(currentBox.x2 - currentBox.x1) > 10 && 
+                    Math.abs(currentBox.y2 - currentBox.y1) > 10) {{
+                    boxes.push({{
+                        x1: Math.min(currentBox.x1, currentBox.x2),
+                        y1: Math.min(currentBox.y1, currentBox.y2),
+                        x2: Math.max(currentBox.x1, currentBox.x2),
+                        y2: Math.max(currentBox.y1, currentBox.y2),
+                        label: 'New Box',
+                        score: 1.0,
+                        index: -1
+                    }});
+                }}
+                currentBox = null;
+                redraw();
+            }}
+            isResizing = false;
+            resizeHandle = null;
+        }});
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {{
+            if (e.key === 'Delete' && selectedBox !== null) {{
+                deleteSelected();
+            }}
+        }});
+    </script>
+    """
+    
+    # Display the HTML canvas
+    st.markdown("### ✏️ Interactive Editor (HTML5 Canvas)")
+    st.markdown("**Instructions:**")
+    st.markdown("- 🖊️ **Draw Mode**: Click and drag to draw new boxes")
+    st.markdown("- ✋ **Move/Resize Mode**: Click boxes to select, drag to move, drag corners to resize")
+    st.markdown("- ❌ **Delete**: Select a box and click Delete button or press Delete key")
+    st.markdown("- 💾 **Save**: Click Save Changes to apply edits")
+    
+    st.components.v1.html(html_code, height=img_rgb.height + 250)
+    
+    # Note: HTML5 canvas edits would need to be captured via Streamlit components communication
+    # For now, users can still use the coordinate editing below
+    st.info("💡 **Note:** Use the box editing interface below to adjust coordinates manually, or use the canvas above for visual editing.")
+
+def display_canvas_editor_alternative(img_rgb, boxes, labels, scores, indices):
+    """
+    Alternative implementation without streamlit-drawable-canvas
+    Uses Streamlit's native image display and PIL ImageDraw for box editing
+    """
+    from PIL import ImageDraw
+    
+    # Initialize session state for selected box
+    if 'selected_box' not in st.session_state:
+        st.session_state.selected_box = None
+    
+    # Create a copy of the image to draw on
+    img_with_boxes = img_rgb.copy()
+    draw = ImageDraw.Draw(img_with_boxes)
+    
+    # Draw all boxes with labels in green
+    green_color = 'green'
+    for idx, (box, label, score) in enumerate(zip(boxes, labels, scores)):
+        # Draw rectangle in green with solid lines
+        draw.rectangle(box, outline=green_color, width=3)
+        # Draw label
+        text = f"{label}: {score:.2f}"
+        # Ensure text doesn't go off image
+        text_y = max(0, box[1] - 15)
+        draw.text((box[0], text_y), text, fill=green_color)
+    
+    # Display the image
+    st.image(img_with_boxes, use_container_width=True)
+    
+    # Box editing interface
+    st.markdown("### ✏️ Edit Bounding Boxes")
+    st.caption("Select a box to edit its coordinates or delete it")
+    
+    if len(boxes) == 0:
+        st.info("No boxes to edit. All detections have been removed.")
+        return
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Select box to edit
+        box_options = [f"Box {i+1}: {label} (conf: {score:.2f})" for i, (label, score) in enumerate(zip(labels, scores))]
+        selected = st.selectbox("Select box to edit:", box_options, key="box_selector")
+        selected_idx = int(selected.split(":")[0].split()[1]) - 1  # Convert to 0-indexed
+        st.session_state.selected_box = selected_idx
+    
+    with col2:
+        if st.button("🗑️ Delete Selected Box", type="secondary", use_container_width=True):
+            # Mark for removal in feedback
+            det_key = f"det_{indices[selected_idx]}"
+            if det_key not in st.session_state.feedback_data.get('detection_feedback', {}):
+                st.session_state.feedback_data['detection_feedback'][det_key] = {
+                    "index": indices[selected_idx],
+                    "action": "remove",
+                    "label": labels[selected_idx],
+                    "bbox": boxes[selected_idx],
+                    "confidence": scores[selected_idx]
+                }
+            else:
+                st.session_state.feedback_data['detection_feedback'][det_key]['action'] = "remove"
+            st.success("Box marked for removal. Changes will be saved with feedback.")
+            st.rerun()
+    
+    # Edit selected box coordinates
+    if st.session_state.selected_box is not None:
+        idx = st.session_state.selected_box
+        if idx < len(boxes):
+            st.markdown(f"**Editing: {labels[idx]}**")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            current_box = boxes[idx]
+            img_width, img_height = img_rgb.size
+            
+            with col1:
+                x1 = st.number_input("X Min", value=int(current_box[0]), min_value=0, max_value=img_width, key=f"x1_{idx}")
+            with col2:
+                y1 = st.number_input("Y Min", value=int(current_box[1]), min_value=0, max_value=img_height, key=f"y1_{idx}")
+            with col3:
+                x2 = st.number_input("X Max", value=int(current_box[2]), min_value=0, max_value=img_width, key=f"x2_{idx}")
+            with col4:
+                y2 = st.number_input("Y Max", value=int(current_box[3]), min_value=0, max_value=img_height, key=f"y2_{idx}")
+            
+            # Validate box
+            if x2 > x1 and y2 > y1:
+                if st.button("💾 Update Box", type="primary", use_container_width=True):
+                    new_bbox = [float(x1), float(y1), float(x2), float(y2)]
+                    # Update feedback
+                    det_key = f"det_{indices[idx]}"
+                    if det_key not in st.session_state.feedback_data.get('detection_feedback', {}):
+                        st.session_state.feedback_data['detection_feedback'][det_key] = {
+                            "index": indices[idx],
+                            "action": "wrong_box",
+                            "label": labels[idx],
+                            "bbox": boxes[idx],
+                            "confidence": scores[idx]
+                        }
+                    st.session_state.feedback_data['detection_feedback'][det_key]['corrected_bbox'] = new_bbox
+                    st.session_state.feedback_data['detection_feedback'][det_key]['action'] = "wrong_box"
+                    st.success("✅ Box updated! Changes will be saved with feedback.")
+                    st.rerun()
+            else:
+                st.warning("⚠️ Invalid box: X Max must be > X Min and Y Max must be > Y Min")
+
+def display_canvas_editor(img_rgb, boxes, labels, scores, indices):
+    """Display interactive canvas for visual bounding box editing."""
+    if not HAS_CANVAS:
+        return
+    
+    # CRITICAL FIX: Convert numpy array to PIL Image if needed
+    # st_canvas expects PIL.Image.Image, not numpy array
+    # This fixes: ValueError: The truth value of an array with more than one element is ambiguous
+    if isinstance(img_rgb, np.ndarray):
+        # Convert numpy array to PIL Image
+        # Handle different array formats: uint8 [0-255] or float [0-1]
+        if img_rgb.dtype == np.uint8:
+            background_image = Image.fromarray(img_rgb, mode='RGB')
+        elif img_rgb.max() <= 1.0:
+            # Float array in [0, 1] range - convert to uint8
+            img_rgb_uint8 = (img_rgb * 255).astype(np.uint8)
+            background_image = Image.fromarray(img_rgb_uint8, mode='RGB')
+        else:
+            # Float array in [0, 255] range - convert to uint8
+            background_image = Image.fromarray(img_rgb.astype(np.uint8), mode='RGB')
+    elif isinstance(img_rgb, Image.Image):
+        # Already a PIL Image - use directly
+        background_image = img_rgb
+    else:
+        raise TypeError(f"img_rgb must be PIL.Image.Image or numpy.ndarray, got {type(img_rgb)}")
+    
+    # Ensure it's RGB mode
+    if background_image.mode != 'RGB':
+        background_image = background_image.convert('RGB')
+    
+    img_width, img_height = background_image.size
+    
+    # Convert boxes to canvas format (x, y, width, height)
+    # Canvas uses top-left corner + width/height, our boxes are [xmin, ymin, xmax, ymax]
+    canvas_objects = []
+    for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
+        xmin, ymin, xmax, ymax = box
+        width = xmax - xmin
+        height = ymax - ymin
+        
+        # Color based on label
+        color_map = {
+            "insulators": "#1f77b4",  # Blue
+            "crossarm": "#ff7f0e",    # Orange
+            "utility-pole": "#2ca02c" # Green
+        }
+        color = color_map.get(label, "#d62728")  # Default red
+        
+        canvas_objects.append({
+            "type": "rect",
+            "x": float(xmin),
+            "y": float(ymin),
+            "width": float(width),
+            "height": float(height),
+            "stroke": color,
+            "strokeWidth": 2,
+            "fill": "transparent",
+            "left": float(xmin),
+            "top": float(ymin),
+            "scaleX": 1.0,
+            "scaleY": 1.0,
+            "angle": 0,
+            "skewX": 0,
+            "skewY": 0,
+            "rx": 0,
+            "ry": 0,
+            "objectId": f"det_{indices[i]}",  # Use original index
+            "label": label,
+            "confidence": float(score)
+        })
+    
+    # Display canvas
+    st.write("**✏️ Interactive Editor:** Drag, resize, or delete boxes directly on the image")
+    st.caption("💡 Tip: Click and drag boxes to move them, drag corners to resize. Double-click to delete.")
+    
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",  # Orange fill with transparency
+        stroke_width=2,
+        stroke_color="#FF0000",  # Red stroke
+        background_image=background_image,  # PIL Image (not numpy array)
+        height=min(800, img_height),  # Limit height for display
+        width=min(1200, img_width),   # Limit width for display
+        drawing_mode="transform",  # Allow moving/resizing existing objects
+        point_display_radius=3 if st.session_state.get("show_points", False) else 0,
+        key="detection_canvas",
+        initial_drawing={
+            "version": "4.4.0",
+            "objects": canvas_objects
+        } if canvas_objects else None,
+        display_toolbar=True,
+    )
+    
+    # Process canvas edits
+    if canvas_result.json_data is not None:
+        canvas_objects_updated = canvas_result.json_data.get("objects", [])
+        
+        # Track which detections are still in canvas (not deleted)
+        active_det_ids = set()
+        
+        # Update session state with canvas edits
+        for obj in canvas_objects_updated:
+            if obj.get("type") == "rect":
+                det_id = obj.get("objectId", "")
+                if det_id.startswith("det_"):
+                    active_det_ids.add(det_id)
+                    try:
+                        det_index = int(det_id.split("_")[1])
+                        det_key = f"det_{det_index}"
+                        
+                        # Get current feedback or create new
+                        if det_key not in st.session_state.feedback_data.get('detection_feedback', {}):
+                            st.session_state.feedback_data['detection_feedback'][det_key] = {
+                                "index": det_index,
+                                "action": None,
+                                "label": obj.get("label", "unknown"),
+                                "bbox": [0, 0, 0, 0],
+                                "confidence": obj.get("confidence", 0.0)
+                            }
+                        
+                        # Extract bbox from canvas object
+                        # Canvas uses x, y, width, height
+                        x = obj.get("left", obj.get("x", 0))
+                        y = obj.get("top", obj.get("y", 0))
+                        width = obj.get("width", 0) * obj.get("scaleX", 1.0)
+                        height = obj.get("height", 0) * obj.get("scaleY", 1.0)
+                        
+                        # Convert to [xmin, ymin, xmax, ymax]
+                        xmin = max(0, min(x, img_width))
+                        ymin = max(0, min(y, img_height))
+                        xmax = max(xmin + 1, min(x + width, img_width))
+                        ymax = max(ymin + 1, min(y + height, img_height))
+                        
+                        new_bbox = [xmin, ymin, xmax, ymax]
+                        
+                        # Update feedback with corrected bbox
+                        current_feedback = st.session_state.feedback_data['detection_feedback'][det_key]
+                        current_feedback['corrected_bbox'] = new_bbox
+                        if current_feedback.get('action') is None:
+                            current_feedback['action'] = "wrong_box"
+                        
+                    except (ValueError, IndexError):
+                        continue
+        
+        # Mark deleted detections (removed from canvas) as "remove"
+        original_det_ids = {obj.get("objectId") for obj in canvas_objects if obj.get("objectId", "").startswith("det_")}
+        deleted_det_ids = original_det_ids - active_det_ids
+        
+        for det_id in deleted_det_ids:
+            try:
+                det_index = int(det_id.split("_")[1])
+                det_key = f"det_{det_index}"
+                if det_key in st.session_state.feedback_data.get('detection_feedback', {}):
+                    st.session_state.feedback_data['detection_feedback'][det_key]['action'] = "remove"
+            except (ValueError, IndexError):
+                continue
+        
+        # Show update message if canvas was edited
+        if len(canvas_objects_updated) != len(canvas_objects):
+            st.info("💾 Canvas edits saved! Boxes have been updated.")
+    
+    # Show canvas controls
+    with st.expander("🎨 Canvas Controls"):
+        st.write("**How to use:**")
+        st.write("- **Move box:** Click and drag the box")
+        st.write("- **Resize box:** Click and drag the corners/edges")
+        st.write("- **Delete box:** Select box and press Delete key, or use Remove button below")
+        st.write("- **Add new box:** Switch to 'Rect' mode in toolbar, draw new box")
+        
+        if st.button("🔄 Reset Canvas to Original Detections"):
+            # Clear canvas edits from session state
+            for det_key in list(st.session_state.feedback_data.get('detection_feedback', {}).keys()):
+                feedback = st.session_state.feedback_data['detection_feedback'][det_key]
+                if isinstance(feedback, dict):
+                    feedback.pop('corrected_bbox', None)
+                    if feedback.get('action') == 'wrong_box' and 'corrected_label' not in feedback:
+                        feedback['action'] = None
+            st.rerun()
 
 # ---- DETR pipeline ----
 @st.cache_resource(show_spinner="Loading model (first time may take 30-60 seconds)...")
@@ -451,9 +2778,6 @@ def infer_utility_detr(pil_img: Image.Image, model, prob_thresh: float):
     scores = max_probs[keep].cpu().numpy().tolist()
     class_ids_filtered = class_ids[keep].cpu().numpy()  # Keep as numpy array
     
-    # DEBUG: Print what we're getting
-    # print(f"DEBUG: keep.sum()={keep.sum()}, class_ids_filtered={class_ids_filtered}")
-    
     # CRITICAL: Model outputs indices 1, 2, 3 (category IDs)
     # Map to class names: 1=insulators, 2=crossarm, 3=utility-pole
     # But our UTILITY_CLASSES array is 0-indexed, so subtract 1
@@ -462,45 +2786,48 @@ def infer_utility_detr(pil_img: Image.Image, model, prob_thresh: float):
     # DEBUG: Verify mapping
     # print(f"DEBUG: class_ids_filtered={class_ids_filtered}, class_indices={class_indices}")
     
-    # CRITICAL FIX: Boxes are normalized to TRANSFORMED image size (800px short side)
-    # The model outputs boxes in normalized cxcywh [0,1] relative to transformed image
-    # We need to scale them to original image coordinates using the correct scale factors
+    # During training, boxes were normalized to TRANSFORMED image size (after resize to 800px)
+    # So during inference: normalize → transformed pixels → original pixels
     
     orig_w, orig_h = original_size
     
-    # Convert from normalized cxcywh [0,1] to xyxy [0,1] (relative to transformed image)
-    boxes_xyxy_norm = box_cxcywh_to_xyxy(boxes_norm)  # [N, 4] in [0,1] range
+    # Convert normalized cxcywh [0,1] to xyxy [0,1] (relative to transformed image)
+    boxes_xyxy_norm = box_cxcywh_to_xyxy(boxes_norm)
     
-    # Calculate scale factors: how much larger is the original image compared to transformed
+    # Scale from normalized [0,1] to TRANSFORMED pixel coordinates
+    boxes_transformed = []
+    for box in boxes_xyxy_norm:
+        x1, y1, x2, y2 = box.cpu().tolist()
+        boxes_transformed.append([
+            x1 * transformed_w,
+            y1 * transformed_h,
+            x2 * transformed_w,
+            y2 * transformed_h
+        ])
+    
+    # Scale from transformed coordinates to original coordinates
     scale_x = orig_w / transformed_w
     scale_y = orig_h / transformed_h
     
-    # Scale boxes from normalized [0,1] (relative to transformed) to original pixel coordinates
-    # We do this in one step: normalized * transformed_size * (original_size / transformed_size)
-    # Which simplifies to: normalized * original_size (but only if boxes were normalized to original)
-    # Since boxes are normalized to transformed, we need: normalized * transformed_size * scale_factor
-    
     boxes = []
-    for box in boxes_xyxy_norm:
-        x1_norm, y1_norm, x2_norm, y2_norm = box.unbind(0)
-        
-        # First scale to transformed pixel coordinates
-        x1_trans = x1_norm.item() * transformed_w
-        y1_trans = y1_norm.item() * transformed_h
-        x2_trans = x2_norm.item() * transformed_w
-        y2_trans = y2_norm.item() * transformed_h
-        
-        # Then scale to original pixel coordinates
-        x1_orig = x1_trans * scale_x
-        y1_orig = y1_trans * scale_y
-        x2_orig = x2_trans * scale_x
-        y2_orig = y2_trans * scale_y
-        
-        boxes.append([x1_orig, y1_orig, x2_orig, y2_orig])
+    for box in boxes_transformed:
+        boxes.append([
+            box[0] * scale_x,
+            box[1] * scale_y,
+            box[2] * scale_x,
+            box[3] * scale_y
+        ])
     
-    # Clamp boxes to image boundaries and ensure valid coordinates (x2 > x1, y2 > y1)
-    boxes = [[max(0, min(b[0], orig_w)), max(0, min(b[1], orig_h)), 
-              max(b[0] + 1, min(b[2], orig_w)), max(b[1] + 1, min(b[3], orig_h))] for b in boxes]
+    # Clamp to image boundaries
+    boxes_clamped = []
+    for b in boxes:
+        x1 = max(0, min(b[0], orig_w))
+        y1 = max(0, min(b[1], orig_h))
+        x2 = min(max(x1 + 1, b[2]), orig_w)
+        y2 = min(max(y1 + 1, b[3]), orig_h)
+        boxes_clamped.append([x1, y1, x2, y2])
+    
+    boxes = boxes_clamped
     
     # Map class indices to class names
     labels = []
@@ -531,6 +2858,14 @@ def sidebar_controls():
 # ---- main app ----
 def main():
     """Main detection page."""
+    # Initialize session state for feedback (must be done early)
+    if 'feedback_data' not in st.session_state:
+        st.session_state.feedback_data = {
+            'overall_feedback': None,
+            'detection_feedback': {},
+            'user_notes': ''
+        }
+    
     # CRITICAL: Check dependencies first - don't exit, show error in Streamlit
     if torch is None:
         st.error("❌ **PyTorch not found!**")
@@ -598,274 +2933,256 @@ def main():
         st.info("💡 **Try:** Lower the confidence threshold (try 0.10-0.30)")
         return
 
-    # Display results
+    # ============================================================================
+    # MODULE 2: DETECTION RESULTS
+    # ============================================================================
+    st.markdown("---")
+    st.markdown("## 📊 Module 2: Detection Results")
+    
+    # Display image with detections using matplotlib
     fig = draw_boxes_matplotlib(img_rgb, boxes, labels, scores, title=title)
     st.pyplot(fig)
-
-    # Show detection statistics
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Total Detections", len(boxes))
-    with col2:
-        st.metric("Avg Confidence", f"{np.mean(scores):.2f}")
-    with col3:
-        unique_classes = len(set(labels))
-        st.metric("Classes Found", unique_classes)
-
-    # Show class distribution
-    if len(labels) > 0:
-        st.subheader("Detection Summary")
-        class_counts = {}
-        for label in labels:
-            class_counts[label] = class_counts.get(label, 0) + 1
-        
-        # Text summary
-        for class_name, count in sorted(class_counts.items()):
-            st.write(f"**{class_name}**: {count} detection(s)")
-        
-        # Visual class distribution chart
-        st.subheader("Class Distribution")
-        if len(class_counts) > 0:
-            # Create bar chart
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-            
-            classes = list(class_counts.keys())
-            counts = list(class_counts.values())
-            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
-            
-            # Bar chart
-            ax1.bar(classes, counts, color=colors[:len(classes)])
-            ax1.set_xlabel('Class')
-            ax1.set_ylabel('Number of Detections')
-            ax1.set_title('Detections per Class')
-            ax1.grid(axis='y', alpha=0.3)
-            plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
-            
-            # Pie chart
-            if len(counts) > 1:
-                ax2.pie(counts, labels=classes, autopct='%1.1f%%', 
-                       colors=colors[:len(classes)], startangle=90)
-                ax2.set_title('Class Distribution (Percentage)')
-            else:
-                ax2.text(0.5, 0.5, f'{classes[0]}\n{counts[0]} detection(s)', 
-                        ha='center', va='center', fontsize=14, transform=ax2.transAxes)
-                ax2.set_title('Class Distribution')
-                ax2.axis('off')
-            
-            plt.tight_layout()
-            st.pyplot(fig)
-
-    # Show raw detections table
+    
+    # Detection summary
+    st.markdown("### Detection Summary")
+    class_counts = {}
+    for label in labels:
+        class_counts[label] = class_counts.get(label, 0) + 1
+    
+    for cls, count in sorted(class_counts.items()):
+        st.write(f"**{cls}**: {count} detection(s)")
+    
+    # Show raw detections (expandable)
     with st.expander("Show raw detections"):
         import pandas as pd
         df = pd.DataFrame({
+            "index": list(range(len(boxes))),
             "label": labels,
             "confidence": [float(x) for x in scores],
-            "xmin": [b[0] for b in boxes],
-            "ymin": [b[1] for b in boxes],
-            "xmax": [b[2] for b in boxes],
-            "ymax": [b[3] for b in boxes],
+            "xmin": [int(b[0]) for b in boxes],
+            "ymin": [int(b[1]) for b in boxes],
+            "xmax": [int(b[2]) for b in boxes],
+            "ymax": [int(b[3]) for b in boxes],
         }).sort_values("confidence", ascending=False).reset_index(drop=True)
         st.dataframe(df, use_container_width=True)
     
     # ============================================================================
-    # HITL FEEDBACK COLLECTION
+    # MODULE 3: CANVAS EDITOR (HITL) + EXPORT FEEDBACK
     # ============================================================================
-    st.divider()
-    st.subheader("💬 Provide Feedback (Human-In-The-Loop)")
-    st.caption("Help improve the model by providing feedback on detections")
+    st.markdown("---")
+    st.markdown("## ✏️ Module 3: Canvas Editor (Human-In-The-Loop)")
+    st.caption("Edit bounding boxes, labels, and provide feedback to improve the model")
     
-    # Import feedback handler
-    try:
-        from feedback_handler import FeedbackHandler
-        feedback_handler = FeedbackHandler()
-    except ImportError:
-        st.warning("⚠️ Feedback handler not available. Install required dependencies.")
-        feedback_handler = None
+    # OBB Editor for editing
+    st.markdown("### 🎨 Edit Detections")
     
-    if feedback_handler:
-        # Initialize session state for feedback
-        if 'feedback_data' not in st.session_state:
-            st.session_state.feedback_data = {
-                'overall_feedback': None,
-                'detection_feedback': {},
-                'user_notes': ''
-            }
+    # Initialize session state for edited boxes
+    if 'obb_edited_data' not in st.session_state:
+        st.session_state.obb_edited_data = None
+    
+    # Display the OBB editor (captures return value from Save button)
+    display_advanced_obb_editor(img_rgb, boxes, labels, scores, list(range(len(boxes))))
+    
+    # Export Annotations Section
+    st.markdown("---")
+    st.markdown("### 💾 Export Annotations")
+    
+    # Status indicator
+    if st.session_state.obb_edited_data:
+        rotated_count = sum(1 for box in st.session_state.obb_edited_data if box['obb']['angle'] != 0)
+        if rotated_count > 0:
+            st.success(f"✅ **Using Edited Data** ({len(st.session_state.obb_edited_data)} box(es), {rotated_count} with rotation)")
+        else:
+            st.info(f"ℹ️ **Using Edited Data** ({len(st.session_state.obb_edited_data)} box(es), no rotation)")
         
-        # Prepare detection data
-        detections = []
-        for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
-            detections.append({
-                "index": i,
-                "label": label,
-                "confidence": float(score),
-                "bbox": [float(box[0]), float(box[1]), float(box[2]), float(box[3])]
+        if st.button("🔄 Reset to Original Detections", key="reset_to_original"):
+            st.session_state.obb_edited_data = None
+            st.rerun()
+    else:
+        st.warning("⚠️ **Using Original Detections** (no rotation angles)")
+    
+    # Determine which data to use for export
+    if st.session_state.obb_edited_data:
+        # Use edited data from OBB canvas
+        edited_boxes = st.session_state.obb_edited_data
+        st.success(f"✅ Using {len(edited_boxes)} edited box(es) from canvas")
+        
+        # Show rotation info
+        rotated_count = sum(1 for box in edited_boxes if box['obb']['angle'] != 0)
+        if rotated_count > 0:
+            st.info(f"🔄 {rotated_count} box(es) have rotation angles")
+            with st.expander("📐 View Rotation Angles"):
+                for i, box in enumerate(edited_boxes):
+                    angle_rad = box['obb']['angle']
+                    angle_deg = angle_rad * 180 / 3.14159
+                    if angle_rad != 0:
+                        st.write(f"**Box {i+1} ({box['label']})**: {angle_deg:.1f}° ({angle_rad:.4f} rad)")
+        else:
+            st.caption("All boxes are axis-aligned (no rotation)")
+        
+        # Prepare detections from edited OBB data
+        detections_data = []
+        for item in edited_boxes:
+            # Get axis-aligned bbox
+            bbox = item['bbox']
+            obb = item['obb']
+            
+            detections_data.append({
+                'id': item.get('index', 0) + 1,
+                'bbox': bbox,
+                'label': item['label'],
+                'score': float(item['score']),
+                'category_id': UTILITY_CLASSES.index(item['label']) + 1 if item['label'] in UTILITY_CLASSES else 1,
+                'obb': obb  # Include OBB data with rotation
             })
+    else:
+        # Use original model predictions
+        st.info("💡 **Tip:** Edit boxes in the canvas above and click 'Save Edits' to export with rotation angles")
         
-        # Overall feedback
-        st.write("**Overall Image Feedback:**")
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            if st.button("✅ All Correct", use_container_width=True, key="feedback_correct"):
-                st.session_state.feedback_data['overall_feedback'] = "correct"
-                st.rerun()
-        with col2:
-            if st.button("⚠️ Some Issues", use_container_width=True, key="feedback_partial"):
-                st.session_state.feedback_data['overall_feedback'] = "partial"
-                st.rerun()
-        with col3:
-            if st.button("❌ Major Issues", use_container_width=True, key="feedback_incorrect"):
-                st.session_state.feedback_data['overall_feedback'] = "incorrect"
-                st.rerun()
-        
-        # Show selected overall feedback
-        if st.session_state.feedback_data['overall_feedback']:
-            feedback_icons = {"correct": "✅", "partial": "⚠️", "incorrect": "❌"}
-            st.info(f"{feedback_icons[st.session_state.feedback_data['overall_feedback']]} Overall feedback: **{st.session_state.feedback_data['overall_feedback']}**")
-        
-        # Individual detection feedback
-        if len(boxes) > 0:
-            st.write("**Individual Detection Feedback:**")
+        # Prepare detections from original predictions
+        detections_data = []
+        for i, (box, label, score) in enumerate(zip(boxes, labels, scores)):
+            x1, y1, x2, y2 = box
+            detections_data.append({
+                'id': i + 1,
+                'bbox': box,
+                'label': label,
+                'score': float(score),
+                'category_id': UTILITY_CLASSES.index(label) + 1 if label in UTILITY_CLASSES else 1,
+                'obb': {
+                    'cx': (x1 + x2) / 2,
+                    'cy': (y1 + y2) / 2,
+                    'width': x2 - x1,
+                    'height': y2 - y1,
+                    'angle': 0.0
+                }
+            })
+    
+    # Image info for COCO format
+    image_info = {
+        'id': 1,
+        'file_name': uploaded.name if hasattr(uploaded, 'name') else 'image.jpg',
+        'width': img_rgb.width,
+        'height': img_rgb.height
+    }
+    
+    # Category info for COCO format
+    categories = [
+        {'id': i+1, 'name': name, 'supercategory': 'utility'}
+        for i, name in enumerate(UTILITY_CLASSES)
+    ]
+    
+    # Export buttons
+    st.markdown("#### 📤 Choose Export Format:")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("📥 Export COCO JSON", type="primary", use_container_width=True):
+            import json
+            from datetime import datetime
             
-            # Show feedback options for each detection
-            for det in detections:
-                det_key = f"det_{det['index']}"
-                if det_key not in st.session_state.feedback_data['detection_feedback']:
-                    st.session_state.feedback_data['detection_feedback'][det_key] = None
+            # Build COCO format
+            coco_data = {
+                'info': {
+                    'description': 'Utility Inventory Detection - Edited Annotations',
+                    'version': '1.0',
+                    'date_created': datetime.now().isoformat()
+                },
+                'images': [image_info],
+                'annotations': [],
+                'categories': categories
+            }
+            
+            # Add annotations
+            for det in detections_data:
+                x1, y1, x2, y2 = det['bbox']
+                width = x2 - x1
+                height = y2 - y1
                 
-                with st.expander(f"Detection {det['index']+1}: {det['label']} (confidence: {det['confidence']:.2f})"):
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        if st.button("✅ Correct", key=f"{det_key}_correct"):
-                            st.session_state.feedback_data['detection_feedback'][det_key] = {
-                                "index": det['index'],
-                                "action": "correct",
-                                "label": det['label'],
-                                "bbox": det['bbox']
-                            }
-                            st.rerun()
-                    
-                    with col2:
-                        if st.button("✏️ Wrong Label", key=f"{det_key}_wrong_label"):
-                            st.session_state.feedback_data['detection_feedback'][det_key] = {
-                                "index": det['index'],
-                                "action": "wrong_label",
-                                "label": det['label'],
-                                "bbox": det['bbox']
-                            }
-                            st.rerun()
-                    
-                    with col3:
-                        if st.button("📦 Wrong Box", key=f"{det_key}_wrong_box"):
-                            st.session_state.feedback_data['detection_feedback'][det_key] = {
-                                "index": det['index'],
-                                "action": "wrong_box",
-                                "label": det['label'],
-                                "bbox": det['bbox']
-                            }
-                            st.rerun()
-                    
-                    with col4:
-                        if st.button("🗑️ Remove", key=f"{det_key}_remove"):
-                            st.session_state.feedback_data['detection_feedback'][det_key] = {
-                                "index": det['index'],
-                                "action": "remove",
-                                "label": det['label'],
-                                "bbox": det['bbox']
-                            }
-                            st.rerun()
-                    
-                    # Show correction options if wrong label selected
-                    if (st.session_state.feedback_data['detection_feedback'].get(det_key, {}).get('action') == 'wrong_label'):
-                        corrected_label = st.selectbox(
-                            "Select correct label:",
-                            ["insulators", "crossarm", "utility-pole"],
-                            key=f"{det_key}_label_select"
-                        )
-                        st.session_state.feedback_data['detection_feedback'][det_key]['corrected_label'] = corrected_label
-                    
-                    # Show current feedback status
-                    current_feedback = st.session_state.feedback_data['detection_feedback'].get(det_key)
-                    if current_feedback:
-                        action_icons = {
-                            "correct": "✅",
-                            "wrong_label": "✏️",
-                            "wrong_box": "📦",
-                            "remove": "🗑️"
-                        }
-                        action_text = current_feedback.get('action', '')
-                        if action_text == 'wrong_label' and 'corrected_label' in current_feedback:
-                            st.success(f"{action_icons.get(action_text, '')} Will correct to: **{current_feedback['corrected_label']}**")
-                        else:
-                            st.success(f"{action_icons.get(action_text, '')} Action: **{action_text}**")
-        
-        # User notes
-        user_notes = st.text_area(
-            "Additional Notes (optional):",
-            value=st.session_state.feedback_data.get('user_notes', ''),
-            key="feedback_notes"
-        )
-        st.session_state.feedback_data['user_notes'] = user_notes
-        
-        # Save feedback button
-        if st.button("💾 Save Feedback", type="primary"):
-            overall_feedback = st.session_state.feedback_data.get('overall_feedback')
-            detection_feedback_list = [
-                v for v in st.session_state.feedback_data['detection_feedback'].values()
-                if v is not None
-            ]
-            user_notes = st.session_state.feedback_data.get('user_notes', '')
+                coco_data['annotations'].append({
+                    'id': det['id'],
+                    'image_id': 1,
+                    'category_id': det['category_id'],
+                    'bbox': [float(x1), float(y1), float(width), float(height)],
+                    'area': float(width * height),
+                    'iscrowd': 0,
+                    'score': det['score']
+                })
             
-            if overall_feedback or detection_feedback_list or user_notes:
-                try:
-                    feedback_file = feedback_handler.save_feedback(
-                        image=img_rgb,
-                        detections=detections,
-                        overall_feedback=overall_feedback,
-                        detection_feedback=detection_feedback_list,
-                        user_notes=user_notes if user_notes else None
-                    )
-                    st.success(f"✅ Feedback saved!")
-                    st.info(f"File: `{feedback_file}`")
-                    
-                    # Reset feedback data
-                    st.session_state.feedback_data = {
-                        'overall_feedback': None,
-                        'detection_feedback': {},
-                        'user_notes': ''
-                    }
-                    
-                    # Show feedback stats
-                    stats = feedback_handler.get_feedback_stats()
-                    st.info(f"**Total feedback collected:** {stats['total_feedback']} images")
-                except Exception as e:
-                    st.error(f"Error saving feedback: {e}")
-                    st.exception(e)
-            else:
-                st.warning("Please provide at least one piece of feedback before saving.")
+            # Create download
+            coco_json = json.dumps(coco_data, indent=2)
+            st.download_button(
+                label="⬇️ Download COCO JSON",
+                data=coco_json,
+                file_name=f"annotations_coco_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+            st.success("✅ COCO format ready for download!")
+    
+    with col2:
+        if st.button("📥 Export OBB JSON", use_container_width=True):
+            import json
+            from datetime import datetime
+            
+            # Build OBB format (with rotation support)
+            obb_data = {
+                'info': {
+                    'description': 'Utility Inventory Detection - OBB Annotations',
+                    'version': '1.0',
+                    'format': 'obb',
+                    'date_created': datetime.now().isoformat()
+                },
+                'images': [image_info],
+                'annotations': [],
+                'categories': categories
+            }
+            
+            # Add annotations (use OBB data with actual rotation angles from editor)
+            for det in detections_data:
+                # Use the OBB data that includes rotation angle
+                obb_info = det['obb']
+                
+                obb_data['annotations'].append({
+                    'id': det['id'],
+                    'image_id': 1,
+                    'category_id': det['category_id'],
+                    'obb': {
+                        'cx': float(obb_info['cx']),
+                        'cy': float(obb_info['cy']),
+                        'width': float(obb_info['width']),
+                        'height': float(obb_info['height']),
+                        'angle': float(obb_info['angle'])  # Actual rotation angle in radians from editor
+                    },
+                    'score': det['score']
+                })
+            
+            # Create download
+            obb_json = json.dumps(obb_data, indent=2)
+            st.download_button(
+                label="⬇️ Download OBB JSON",
+                data=obb_json,
+                file_name=f"annotations_obb_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+            st.success("✅ OBB format ready for download!")
+    
+    # Info about export formats
+    with st.expander("ℹ️ About Export Formats"):
+        st.markdown("""
+        **COCO JSON**: Standard format for object detection. Compatible with:
+        - PyTorch DETR training
+        - Detectron2
+        - MMDetection
+        - Most modern detection frameworks
         
-        # Export feedback section
-        st.divider()
-        st.subheader("📤 Export Feedback")
+        **OBB JSON**: Oriented Bounding Box format with rotation support. Use for:
+        - Rotated object detection
+        - Aerial image detection
+        - Custom training pipelines that support rotation
+        - Includes rotation angles in radians for precise orientation
         
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("📊 View Feedback Stats"):
-                stats = feedback_handler.get_feedback_stats()
-                st.json(stats)
-        
-        with col2:
-            if st.button("📥 Export to COCO Format"):
-                try:
-                    export_path = feedback_handler.export_to_coco()
-                    st.success(f"✅ Feedback exported!")
-                    st.info(f"File: `{export_path}`")
-                    st.info("💡 This COCO file can be merged with your training dataset for retraining")
-                except Exception as e:
-                    st.error(f"Error exporting feedback: {e}")
-                    st.exception(e)
+        **💡 Tip**: After exporting, merge these annotations with your existing dataset for retraining!
+        """)
 
 # ---- About page ----
 def show_about():

@@ -1,0 +1,27 @@
+{
+  "info": {
+    "description": "HITL Feedback Export",
+    "version": "1.0",
+    "year": 2026
+  },
+  "licenses": [],
+  "images": [],
+  "annotations": [],
+  "categories": [
+    {
+      "id": 1,
+      "name": "insulators",
+      "supercategory": "utility"
+    },
+    {
+      "id": 2,
+      "name": "crossarm",
+      "supercategory": "utility"
+    },
+    {
+      "id": 3,
+      "name": "utility-pole",
+      "supercategory": "utility"
+    }
+  ]
+}
