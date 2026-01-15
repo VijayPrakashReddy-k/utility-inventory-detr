@@ -11,8 +11,7 @@ Training DETR model to detect: **insulators**, **crossarm**, **utility-pole**
 ## 🎥 Demo Video
 
 <div align="center">
-  <video width="100%" controls>
-    <source src="assets/demo-compressed.mp4" type="video/mp4">
+  <video src="https://media.githubusercontent.com/media/VijayPrakashReddy-k/utility-inventory-detr/main/assets/demo-compressed.mp4" width="100%" controls>
     Your browser does not support the video tag.
   </video>
 </div>
