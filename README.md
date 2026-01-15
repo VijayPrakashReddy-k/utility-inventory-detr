@@ -11,7 +11,7 @@ Training DETR model to detect: **insulators**, **crossarm**, **utility-pole**
 
 ## 🎥 Demo Video
 
-[![OBB Editor Demo]()](https://github.com/VijayPrakashReddy-k/utility-inventory-detr/assets/demo.mov)
+https://github.com/VijayPrakashReddy-k/utility-inventory-detr/assets/demo.mov
 
 ---
 
