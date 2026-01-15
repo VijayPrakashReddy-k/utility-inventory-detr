@@ -11,16 +11,7 @@ Training DETR model to detect: **insulators**, **crossarm**, **utility-pole**
 
 ## 🎥 Demo Video
 
-https://github.com/VijayPrakashReddy-k/utility-inventory-detr/assets/demo.mov
-
-> **✨ Features Shown:**
-> - Advanced OBB Editor with rotation support
-> - Real-time angle tracking and editing
-> - One-click JSON export with rotation angles
-> - Visual feedback and professional UI
-> - Select/Edit mode for preserving original detection scores
->
-> *Video stored with Git LFS (197MB)*
+[![OBB Editor Demo]()](https://github.com/VijayPrakashReddy-k/utility-inventory-detr/assets/demo.mov)
 
 ---
 
