@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/08445eaa-a337-44bb-9ff0-a354a05b03dc
 > - Visual feedback and professional UI
 > - Select/Edit mode for preserving original detection scores
 >
-> *Video stored with Git LFS (68MB compressed from 197MB)*
+> *Video stored with Git LFS (68MB compressed from 197MB and further less than 10mb)*
 ---
 
 ## Quick Start
